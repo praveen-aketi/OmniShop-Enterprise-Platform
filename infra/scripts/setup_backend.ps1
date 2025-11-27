@@ -1,7 +1,7 @@
 param(
     [string]$Region = "us-east-1",
     [string]$GitHubOrg = "praveen-aketi",
-    [string]$GitHubRepo = "DevSecOps-practices", # Updated to match your folder name/likely repo
+    [string]$GitHubRepo = "DevSecOps-practices", 
     [string]$BucketName = "omnishop-tf-state-$((Get-Random))",
     [string]$DynamoTableName = "omnishop-tf-lock"
 )
@@ -16,9 +16,11 @@ if ($LASTEXITCODE -ne 0) {
 
 # 1. Create S3 Bucket
 Write-Host "`n--- Setting up S3 Bucket: $BucketName ---"
-if (aws s3api head-bucket --bucket $BucketName 2>$null) {
+try {
+    aws s3api head-bucket --bucket $BucketName 2>&1 | Out-Null
     Write-Host "Bucket $BucketName already exists."
-} else {
+}
+catch {
     aws s3api create-bucket --bucket $BucketName --region $Region
     if ($Region -ne "us-east-1") {
         aws s3api create-bucket --bucket $BucketName --region $Region --create-bucket-configuration LocationConstraint=$Region
@@ -32,11 +34,12 @@ Write-Host "`n--- Setting up DynamoDB Table: $DynamoTableName ---"
 $table = aws dynamodb list-tables --query "TableNames[? @ == '$DynamoTableName']" --output text
 if ($table) {
     Write-Host "Table $DynamoTableName already exists."
-} else {
+}
+else {
     aws dynamodb create-table --table-name $DynamoTableName `
-        --attribute-definitions AttributeName=LockID,AttributeType=S `
-        --key-schema AttributeName=LockID,KeyType=HASH `
-        --provisioned-throughput ReadCapacityUnits=5,WriteCapacityUnits=5 `
+        --attribute-definitions AttributeName=LockID, AttributeType=S `
+        --key-schema AttributeName=LockID, KeyType=HASH `
+        --provisioned-throughput ReadCapacityUnits=5, WriteCapacityUnits=5 `
         --region $Region
     Write-Host "Table created."
 }
@@ -51,7 +54,8 @@ if (-not $oidcArn) {
     $thumbprint = "6938fd4d98bab03faadb97b34396831e3780aea1"
     $oidcArn = aws iam create-open-id-connect-provider --url $oidcUrl --client-id-list "sts.amazonaws.com" --thumbprint-list $thumbprint --query "OpenIDConnectProviderArn" --output text
     Write-Host "OIDC Provider created: $oidcArn"
-} else {
+}
+else {
     Write-Host "OIDC Provider already exists: $oidcArn"
 }
 
@@ -82,12 +86,17 @@ $TrustPolicy = @"
 }
 "@
 
+# Write policy to temp file to avoid quoting issues
+$PolicyFile = "$env:TEMP\trust-policy.json"
+$TrustPolicy | Out-File -FilePath $PolicyFile -Encoding ASCII
+
 try {
     aws iam get-role --role-name $RoleName > $null 2>&1
-    aws iam update-assume-role-policy --role-name $RoleName --policy-document $TrustPolicy
+    aws iam update-assume-role-policy --role-name $RoleName --policy-document file://$PolicyFile
     Write-Host "Role exists. Updated trust policy."
-} catch {
-    aws iam create-role --role-name $RoleName --assume-role-policy-document $TrustPolicy
+}
+catch {
+    aws iam create-role --role-name $RoleName --assume-role-policy-document file://$PolicyFile
     Write-Host "Role created."
 }
 
