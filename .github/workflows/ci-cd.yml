@@ -41,9 +41,9 @@ jobs:
           tags: ${{ secrets.DOCKER_USERNAME }}/products-service:${{ github.sha }}
 
       - name: Install cosign
-        uses: sigstore/cosign-installer@v3.1.1
+        uses: sigstore/cosign-installer@v3.5.0
         with:
-          cosign-release: 'v2.2.0'
+          cosign-release: 'v2.2.4'
 
       - name: Sign images with cosign (KMS or keyless)
         env:
