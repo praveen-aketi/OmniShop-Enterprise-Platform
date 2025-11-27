@@ -1,0 +1,41 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: devsecops-appset
+  namespace: argocd
+spec:
+  generators:
+    - list:
+        elements:
+          - cluster: https://kubernetes.default.svc
+            namespace: devsecops
+            env: dev
+          - cluster: https://kubernetes.default.svc
+            namespace: devsecops
+            env: stage
+          - cluster: https://kubernetes.default.svc
+            namespace: devsecops
+            env: prod
+  template:
+    metadata:
+      name: '{{repoName}}-{{env}}'
+    spec:
+      project: default
+      source:
+        repoURL: 'https://github.com/praveen-aketi/DevSecOps-practices'
+        targetRevision: main
+        path: k8s
+      destination:
+        server: '{{cluster}}'
+        namespace: '{{namespace}}'
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+
+# Additional ApplicationSet templates can be added to deploy external Helm
+# charts (Prometheus, Grafana, ELK) per environment. This example syncs the
+# `k8s/` folder for each environment. To deploy Helm charts managed by ArgoCD
+# add another template with a Helm source (repoURL pointing to chart repo).
+
+

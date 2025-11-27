@@ -1,0 +1,31 @@
+name: Bootstrap Terraform Backend
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials from OIDC
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+
+      - name: Terraform Init
+        working-directory: infra/terraform/bootstrap
+        run: terraform init
+
+      - name: Terraform Apply
+        working-directory: infra/terraform/bootstrap
+        run: terraform apply -auto-approve -var="aws_region=${{ secrets.AWS_REGION }}"

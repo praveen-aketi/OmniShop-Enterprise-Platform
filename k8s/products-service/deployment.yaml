@@ -1,0 +1,23 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: products-service
+  namespace: devsecops
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: products-service
+  template:
+    metadata:
+      labels:
+        app: products-service
+    spec:
+      containers:
+        - name: products-service
+          image: docker.io/prvnaketi/products-service:latest # replace with your Docker Hub username
+          ports:
+            - containerPort: 8081
+          env:
+            - name: ENV
+              value: "dev"

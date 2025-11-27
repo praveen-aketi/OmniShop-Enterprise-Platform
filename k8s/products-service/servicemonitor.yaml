@@ -1,0 +1,15 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: products-service-monitor
+  namespace: devsecops
+  labels:
+    release: kube-prometheus-stack
+spec:
+  selector:
+    matchLabels:
+      app: products-service
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s

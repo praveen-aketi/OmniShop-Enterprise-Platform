@@ -1,0 +1,27 @@
+---
+# Ansible playbook scaffold for provisioning and configuration
+# Use this playbook to perform post-provisioning tasks such as:
+# - Configure nodes (packages, users, kubelet extras)
+# - Deploy cluster bootstrap components (CNI, ingress)
+
+- hosts: all
+  become: true
+  vars:
+    kube_packages:
+      - docker.io
+      - apt-transport-https
+  tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+
+    - name: Install kube-related packages (example)
+      apt:
+        name: "{{ kube_packages }}"
+        state: present
+
+    - name: Ensure sysctl net.ipv4.ip_forward is enabled
+      sysctl:
+        name: net.ipv4.ip_forward
+        value: '1'
+        state: present
