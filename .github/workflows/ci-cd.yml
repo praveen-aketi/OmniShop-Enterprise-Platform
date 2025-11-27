@@ -58,8 +58,8 @@ jobs:
             cosign sign --key "${{ secrets.COSIGN_KEY_ARN }}" $IMAGE_B || exit 1
           else
             echo "No COSIGN_KEY_ARN found — falling back to keyless signing"
-            cosign sign --keyless $IMAGE_A || exit 1
-            cosign sign --keyless $IMAGE_B || exit 1
+            cosign sign -y $IMAGE_A || exit 1
+            cosign sign -y $IMAGE_B || exit 1
           fi
 
       - name: Install Trivy
