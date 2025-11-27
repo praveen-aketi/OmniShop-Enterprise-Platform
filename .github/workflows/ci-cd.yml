@@ -29,7 +29,7 @@ jobs:
       - name: Build and push orders-service
         uses: docker/build-push-action@v4
         with:
-          context: ./orders-service
+          context: .
           file: ./orders-service/Dockerfile
           push: true
           tags: ${{ secrets.DOCKER_USERNAME }}/orders-service:${{ github.sha }}
@@ -37,7 +37,7 @@ jobs:
       - name: Build and push products-service
         uses: docker/build-push-action@v4
         with:
-          context: ./products-service
+          context: .
           file: ./products-service/Dockerfile
           push: true
           tags: ${{ secrets.DOCKER_USERNAME }}/products-service:${{ github.sha }}
