@@ -42,15 +42,17 @@ module "eks" {
   vpc_id     = module.vpc.vpc_id
   subnet_ids = module.vpc.private_subnets
 
-  node_groups = {
+  eks_managed_node_groups = {
     default = {
-      desired_capacity = var.node_group_desired_capacity
-      max_capacity     = var.node_group_max_capacity
-      instance_type    = "t3.medium"
+      min_size     = 1
+      max_size     = var.node_group_max_capacity
+      desired_size = var.node_group_desired_capacity
+
+      instance_types = ["t3.medium"]
     }
   }
 
-  manage_aws_auth = true
+  manage_aws_auth_configmap = true
 }
 
 
