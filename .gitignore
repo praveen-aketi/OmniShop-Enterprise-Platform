@@ -53,7 +53,7 @@ kubeconfig
 # Docker
 docker-compose.override.yml
 docker-compose.*.yml
-**/Dockerfile
+
 
 # Secrets / environment
 .env
