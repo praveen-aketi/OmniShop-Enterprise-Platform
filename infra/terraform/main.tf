@@ -53,19 +53,4 @@ module "eks" {
   manage_aws_auth = true
 }
 
-output "cluster_name" {
-  value = module.eks.cluster_id
-}
 
-output "cluster_endpoint" {
-  value = module.eks.cluster_endpoint
-}
-
-output "cluster_certificate_authority_data" {
-  value = module.eks.cluster_certificate_authority_data
-}
-
-output "kubeconfig_command" {
-  description = "Command to obtain kubeconfig for the cluster"
-  value       = "aws eks --region ${var.aws_region} update-kubeconfig --name ${module.eks.cluster_id}"
-}
