@@ -81,11 +81,12 @@ jobs:
           trivy image --severity CRITICAL,HIGH --exit-code 1 --no-progress $IMAGE_B || (echo "Trivy found high/critical vulnerabilities in $IMAGE_B" && exit 1)
 
       - name: SonarQube Scan (SonarCloud/Server)
-        uses: sonarsource/sonarcloud-github-action@v1
+        uses: sonarsource/sonarcloud-github-action@v2.0.0
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         with:
           args: >-
+            -X
             -Dsonar.host.url=${{ secrets.SONAR_HOST_URL }}
             -Dsonar.organization=${{ secrets.SONAR_ORG }}
             -Dsonar.projectKey=${{ github.repository }}
