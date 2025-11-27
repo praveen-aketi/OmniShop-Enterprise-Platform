@@ -7,7 +7,7 @@ variable "aws_region" {
 variable "aws_profile" {
   description = "AWS CLI profile name to use for local runs"
   type        = string
-  default     = "default"
+  default     = null
 }
 
 variable "cluster_name" {
