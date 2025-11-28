@@ -173,6 +173,27 @@ terraform plan -var="aws_region=us-east-1"
 terraform apply -var="aws_region=us-east-1"
 ```
 
+### 💣 Destroying the Infrastructure
+
+To tear down the environment and avoid incurring costs, follow these steps:
+
+1.  **Delete Kubernetes Load Balancers (Important)**:
+    Terraform may not be able to delete the VPC if Load Balancers created by Kubernetes services still exist.
+    ```bash
+    # List Load Balancers
+    aws elb describe-load-balancers --region us-east-1
+    
+    # Delete Load Balancer (replace with your LB name)
+    aws elb delete-load-balancer --load-balancer-name <your-lb-name> --region us-east-1
+    ```
+
+2.  **Run Terraform Destroy**:
+    ```bash
+    cd infra/terraform
+    terraform destroy -auto-approve -var="aws_region=us-east-1"
+    ```
+    *Note: If destroy fails due to dependencies (like Security Groups), ensure all Load Balancers and their Security Groups are deleted first.*
+
 ## 🤝 Contributing
 
 Contributions are welcome! Please open an issue or submit a pull request.
