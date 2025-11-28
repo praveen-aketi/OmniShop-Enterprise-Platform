@@ -18,7 +18,7 @@ spec:
             env: prod
   template:
     metadata:
-      name: '{{repoName}}-{{env}}'
+      name: 'omnishop-{{env}}'
     spec:
       project: default
       source:
