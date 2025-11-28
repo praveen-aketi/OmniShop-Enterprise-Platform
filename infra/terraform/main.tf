@@ -3,7 +3,7 @@ terraform {
   required_providers {
     aws = {
       source  = "hashicorp/aws"
-      version = ">= 4.0, < 5.0.0"
+      version = ">= 5.34"
     }
     kubernetes = {
       source  = "hashicorp/kubernetes"
@@ -33,7 +33,7 @@ data "aws_availability_zones" "available" {}
 # VPC - using community module
 module "vpc" {
   source  = "terraform-aws-modules/vpc/aws"
-  version = "~> 3.0"
+  version = "~> 5.0"
 
   name = "${var.cluster_name}-vpc"
   cidr = var.vpc_cidr
@@ -49,7 +49,7 @@ module "vpc" {
 # EKS cluster using the stable community module
 module "eks" {
   source          = "terraform-aws-modules/eks/aws"
-  version         = "~> 19.0"
+  version         = "~> 20.0"
 
   cluster_name    = var.cluster_name
   cluster_version = "1.30"
@@ -68,7 +68,7 @@ module "eks" {
     }
   }
 
-  manage_aws_auth_configmap = true
+  enable_cluster_creator_admin_permissions = true
 }
 
 

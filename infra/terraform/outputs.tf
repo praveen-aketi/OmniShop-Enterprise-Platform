@@ -10,5 +10,5 @@ output "cluster_ca" {
 
 output "cluster_name" {
   description = "Kubernetes Cluster Name"
-  value       = module.eks.cluster_id
+  value       = module.eks.cluster_name
 }

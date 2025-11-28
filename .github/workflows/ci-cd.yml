@@ -105,6 +105,8 @@ jobs:
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_wrapper: false
 
       - name: Terraform Init
         working-directory: infra/terraform
@@ -124,7 +126,9 @@ jobs:
           AWS_REGION: ${{ secrets.AWS_REGION }}
         run: |
           # Update kubeconfig for the EKS cluster created by Terraform
-          CLUSTER_NAME=$(terraform -chdir=infra/terraform output -raw cluster_name 2>/dev/null || echo "devsecops-cluster")
+          # Try to get cluster_name (new), fallback to cluster_id (old), then default
+          CLUSTER_NAME=$(terraform -chdir=infra/terraform output -raw cluster_name 2>/dev/null || terraform -chdir=infra/terraform output -raw cluster_id 2>/dev/null || echo "devsecops-cluster")
+          echo "Using Cluster Name: $CLUSTER_NAME"
           aws eks --region $AWS_REGION update-kubeconfig --name $CLUSTER_NAME
           # Apply the ApplicationSet which will create per-env ArgoCD Applications
           kubectl apply -f k8s/argo/applicationset.yaml
