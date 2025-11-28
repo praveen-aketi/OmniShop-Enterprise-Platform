@@ -31,14 +31,14 @@ jobs:
         with:
           context: ./orders-service
           push: true
-          tags: ${{ secrets.DOCKER_USERNAME }}/orders-service:${{ github.sha }}
+          tags: ${{ secrets.DOCKER_USERNAME }}/orders-service:${{ github.sha }},${{ secrets.DOCKER_USERNAME }}/orders-service:latest
 
       - name: Build and push products-service
         uses: docker/build-push-action@v4
         with:
           context: ./products-service
           push: true
-          tags: ${{ secrets.DOCKER_USERNAME }}/products-service:${{ github.sha }}
+          tags: ${{ secrets.DOCKER_USERNAME }}/products-service:${{ github.sha }},${{ secrets.DOCKER_USERNAME }}/products-service:latest
 
       - name: Install cosign
         uses: sigstore/cosign-installer@v3.5.0
