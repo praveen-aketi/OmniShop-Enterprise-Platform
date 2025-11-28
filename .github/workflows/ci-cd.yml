@@ -129,7 +129,20 @@ jobs:
           # Try to get cluster_name (new), fallback to cluster_id (old), then default
           CLUSTER_NAME=$(terraform -chdir=infra/terraform output -raw cluster_name 2>/dev/null || terraform -chdir=infra/terraform output -raw cluster_id 2>/dev/null || echo "devsecops-cluster")
           echo "Using Cluster Name: $CLUSTER_NAME"
+          echo "Using Cluster Name: $CLUSTER_NAME"
           aws eks --region $AWS_REGION update-kubeconfig --name $CLUSTER_NAME
+
+          # Install ArgoCD
+          echo "Installing ArgoCD..."
+          kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
+          kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+
+          # Wait for ArgoCD CRDs to be established
+          echo "Waiting for ArgoCD CRDs..."
+          # We loop briefly to wait for the CRD to be visible to the API server
+          for i in {1..10}; do kubectl get crd applicationsets.argoproj.io && break || sleep 5; done
+          kubectl wait --for=condition=established crd/applicationsets.argoproj.io --timeout=60s
+
           # Apply the ApplicationSet which will create per-env ArgoCD Applications
           kubectl apply -f k8s/argo/applicationset.yaml
           # Apply Monitoring Stack
