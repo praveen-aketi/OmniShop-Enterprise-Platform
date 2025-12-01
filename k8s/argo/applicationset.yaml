@@ -32,6 +32,8 @@ spec:
         automated:
           prune: true
           selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
 
 # Additional ApplicationSet templates can be added to deploy external Helm
 # charts (Prometheus, Grafana, ELK) per environment. This example syncs the
