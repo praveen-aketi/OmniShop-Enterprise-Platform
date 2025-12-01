@@ -20,6 +20,15 @@ spec:
             passwordKey: admin-password
           service:
             type: LoadBalancer
+          sidecar:
+            dashboards:
+              enabled: true
+              defaultFolderName: "General"
+              label: grafana_dashboard
+              labelValue: "1"
+            datasources:
+              enabled: true
+              defaultDatasourceEnabled: true
         prometheus:
           prometheusSpec:
             serviceMonitorSelectorNilUsesHelmValues: false
