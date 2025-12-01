@@ -9,6 +9,7 @@ services:
     tag: latest
     replicas: 2
     port: 8080
+    type: LoadBalancer
     serviceMonitor: true
 
   products:

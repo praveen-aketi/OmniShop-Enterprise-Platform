@@ -58,23 +58,6 @@ jobs:
           echo "Using Cluster Name: $CLUSTER_NAME"
           aws eks --region $AWS_REGION update-kubeconfig --name $CLUSTER_NAME
 
-          # Install ArgoCD
-          echo "Installing/Updating ArgoCD..."
-          kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
-          kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
-
-          # Create Grafana Secret (if not exists)
-          # Note: In a real prod env, fetch this from a secure vault or GitHub Secrets
-          kubectl create secret generic grafana-admin-credentials \
-            --from-literal=admin-user=admin \
-            --from-literal=admin-password=StrongPassword123! \
-            -n argocd --dry-run=client -o yaml | kubectl apply -f -
-
-          # Wait for ArgoCD CRDs
-          echo "Waiting for ArgoCD CRDs..."
-          for i in {1..10}; do kubectl get crd applicationsets.argoproj.io && break || sleep 5; done
-          kubectl wait --for=condition=established crd/applicationsets.argoproj.io --timeout=60s
-
           # Apply ApplicationSet and Monitoring
           kubectl apply -f k8s/argo/applicationset.yaml
           kubectl apply -f k8s/argo/monitoring.yaml
