@@ -39,6 +39,12 @@ jobs:
         working-directory: infra/terraform
         run: terraform init -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" -backend-config="dynamodb_table=${{ secrets.TF_STATE_LOCK_TABLE }}"
 
+      - name: Force Unlock Terraform State
+        working-directory: infra/terraform
+        run: terraform force-unlock -force f2d4a15c-18f7-36cc-1723-02ba2eb1d634
+        env:
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+
       - name: Terraform Plan
         working-directory: infra/terraform
         run: terraform plan -var="aws_region=${{ secrets.AWS_REGION }}"
