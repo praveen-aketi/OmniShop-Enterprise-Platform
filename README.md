@@ -5,12 +5,13 @@
 ## 🚀 Project Overview
 
 The platform consists of the following core business domains:
+-   **Frontend Dashboard**: A modern React-based Single Page Application (SPA) for managing orders and products.
 -   **Order Management System (OMS)**: Implemented as `orders-service`, handling customer order processing.
 -   **Product Catalog Service (PCS)**: Implemented as `products-service`, managing inventory and product details.
 
 Key capabilities demonstrated:
 -   **Infrastructure as Code**: AWS infrastructure provisioning using Terraform (EKS, VPC, IAM).
--   **CI/CD**: GitHub Actions pipelines for building, testing, security scanning, and deploying.
+-   **CI/CD**: Split GitHub Actions pipelines for optimized Application builds and Infrastructure deployment.
 -   **GitOps**: Argo CD for continuous deployment to Kubernetes.
 -   **Security**: Integrated security checks including SAST (SonarQube), Container Scanning (Trivy), and Image Signing (Cosign).
 -   **Observability**: Scaffolding for Prometheus, Grafana, and ELK stack.
@@ -19,11 +20,12 @@ Key capabilities demonstrated:
 
 | Category | Tools |
 |----------|-------|
+| **Frontend** | React, Vite, CSS Modules |
+| **Backend** | Python (Flask) |
 | **Cloud Provider** | AWS |
 | **Orchestration** | Kubernetes (EKS) |
 | **IaC** | Terraform, Ansible |
 | **CI/CD** | GitHub Actions, Argo CD |
-| **Languages** | Python, HCL, YAML, Bash |
 | **Security** | SonarQube, Trivy, Cosign |
 | **Artifacts** | Docker Hub |
 
@@ -31,7 +33,10 @@ Key capabilities demonstrated:
 
 ```text
 .
-├── .github/workflows   # CI/CD pipelines (Build, Scan, Deploy)
+├── .github/workflows   # CI/CD pipelines
+│   ├── app-ci.yml      # Application CI (Build, Test, Scan)
+│   └── infra-deploy.yml# Infrastructure CD (Terraform, ArgoCD)
+├── frontend            # React Frontend Application
 ├── infra               # Infrastructure as Code
 │   ├── terraform       # AWS infrastructure (EKS, VPC, etc.)
 │   ├── ansible         # Configuration management
@@ -50,6 +55,7 @@ Key capabilities demonstrated:
 ### Prerequisites
 
 -   [Docker](https://www.docker.com/)
+-   [Node.js 18+](https://nodejs.org/)
 -   [Python 3.9+](https://www.python.org/)
 -   [Terraform](https://www.terraform.io/)
 -   [kubectl](https://kubernetes.io/docs/tasks/tools/)
@@ -63,62 +69,49 @@ Key capabilities demonstrated:
     cd OmniShop-Platform
     ```
 
-2.  **Run Order Management Service (OMS):**
+2.  **Run Frontend Dashboard:**
+    ```bash
+    cd frontend
+    npm install
+    npm run dev
+    # Access Dashboard: http://localhost:5173
+    ```
+
+3.  **Run Order Management Service (OMS):**
     ```bash
     cd orders-service
     python3 -m venv .venv
     source .venv/bin/activate  # On Windows: .venv\Scripts\activate
     pip install -r requirements.txt
     python app.py
-    # Health check: http://localhost:8080/health
+    # API: http://localhost:8080/api/orders
     ```
 
-3.  **Run Product Catalog Service (PCS):**
+4.  **Run Product Catalog Service (PCS):**
     ```bash
     cd ../products-service
     python3 -m venv .venv
     source .venv/bin/activate
     pip install -r requirements.txt
     python app.py
-    # Health check: http://localhost:8081/health
+    # API: http://localhost:8081/api/products
     ```
 
-4.  **Run Tests:**
-    Each service includes a `tests/` directory with `pytest` unit tests.
-    ```bash
-    # From orders-service or products-service directory
-    pip install pytest
-    pytest
-    ```
+## 🔄 CI/CD Pipelines
 
-## 📊 Monitoring & Observability
+The project uses a split-pipeline architecture for efficiency:
 
-The project includes a comprehensive monitoring stack:
+### 1. Application CI (`app-ci.yml`)
+Triggers on changes to `frontend/`, `orders-service/`, or `products-service/`.
+-   **Build**: Docker builds for backend services, NPM build for frontend.
+-   **Test**: Runs unit tests.
+-   **Scan**: Trivy (Container Security) and SonarQube (Code Quality).
+-   **Push**: Pushes signed images to Docker Hub.
 
-### Prometheus & Grafana (Metrics)
--   **Stack**: Deployed using the `kube-prometheus-stack` Helm chart via ArgoCD.
--   **Components**: Prometheus, Grafana, Alertmanager, Node Exporter.
--   **Service Monitoring**: Both `orders-service` and `products-service` are instrumented with `prometheus-flask-exporter` and have dedicated `ServiceMonitor` resources.
--   **Access**: Grafana is exposed via a LoadBalancer service. Default admin password is `admin`.
-
-### ELK Stack (Logs)
--   **Elasticsearch**: A single-node deployment is defined in `monitoring/elk-stack/elastic-deployment.yaml`.
--   **Production Note**: For production environments, it is highly recommended to use the official [Elastic Helm Charts](https://github.com/elastic/helm-charts) for better scalability and management.
-
-## 🔄 CI/CD Pipeline
-
-The pipeline defined in `.github/workflows/ci-cd.yml` performs the following steps:
-
-1.  **Checkout**: Fetches the code.
-2.  **Build**: Docker builds for `orders-service` and `products-service`.
-3.  **Push**: Pushes images to Docker Hub.
-4.  **Sign**: Signs the container images using **Cosign** (Keyless or KMS).
-5.  **Scan**:
-    -   **Trivy**: Scans images for Critical/High vulnerabilities.
-    -   **SonarQube**: Performs static code analysis.
-6.  **Deploy**:
-    -   **Terraform**: Provisions/Updates AWS infrastructure.
-    -   **Argo CD**: Syncs the state of the cluster with the `k8s/` directory.
+### 2. Infrastructure Deploy (`infra-deploy.yml`)
+Triggers on changes to `infra/` or `k8s/`.
+-   **Terraform**: Plans and Applies AWS infrastructure changes.
+-   **Argo CD**: Syncs Kubernetes manifests and updates the cluster.
 
 ## 🔐 Security & Configuration
 
