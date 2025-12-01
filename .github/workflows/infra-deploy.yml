@@ -39,11 +39,6 @@ jobs:
         working-directory: infra/terraform
         run: terraform init -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" -backend-config="dynamodb_table=${{ secrets.TF_STATE_LOCK_TABLE }}"
 
-      - name: Import Existing Log Group
-        working-directory: infra/terraform
-        run: terraform import -var="aws_region=${{ secrets.AWS_REGION }}" module.eks.aws_cloudwatch_log_group.this[0] /aws/eks/devsecops-cluster/cluster || echo "Import failed or already imported"
-        env:
-          AWS_REGION: ${{ secrets.AWS_REGION }}
 
       - name: Terraform Plan
         working-directory: infra/terraform
