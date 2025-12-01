@@ -69,6 +69,21 @@ module "eks" {
   }
 
   enable_cluster_creator_admin_permissions = true
+
+  access_entries = {
+    # Grant admin access to the local user
+    my_admin_user = {
+      principal_arn     = "arn:aws:iam::590184002810:user/my-admin-user"
+      policy_associations = {
+        admin = {
+          policy_arn = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+          access_scope = {
+            type = "cluster"
+          }
+        }
+      }
+    }
+  }
 }
 
 
