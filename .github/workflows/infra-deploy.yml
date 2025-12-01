@@ -1,0 +1,72 @@
+name: Infrastructure Deploy
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'infra/**'
+      - 'k8s/**'
+      - '.github/workflows/infra-deploy.yml'
+  workflow_dispatch:
+    inputs:
+      auto_apply:
+        description: 'Automatically apply Terraform changes'
+        required: false
+        default: 'false'
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy-infra:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials from OIDC
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_wrapper: false
+
+      - name: Terraform Init
+        working-directory: infra/terraform
+        run: terraform init -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" -backend-config="dynamodb_table=${{ secrets.TF_STATE_LOCK_TABLE }}"
+
+      - name: Terraform Plan
+        working-directory: infra/terraform
+        run: terraform plan -var="aws_region=${{ secrets.AWS_REGION }}"
+
+      - name: Terraform Apply
+        if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event.inputs.auto_apply == 'true')
+        working-directory: infra/terraform
+        run: terraform apply -auto-approve -var="aws_region=${{ secrets.AWS_REGION }}"
+
+      - name: Update kubeconfig and apply ArgoCD
+        env:
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+        run: |
+          # Update kubeconfig
+          CLUSTER_NAME=$(terraform -chdir=infra/terraform output -raw cluster_name 2>/dev/null || terraform -chdir=infra/terraform output -raw cluster_id 2>/dev/null || echo "devsecops-cluster")
+          echo "Using Cluster Name: $CLUSTER_NAME"
+          aws eks --region $AWS_REGION update-kubeconfig --name $CLUSTER_NAME
+
+          # Install ArgoCD
+          echo "Installing/Updating ArgoCD..."
+          kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
+          kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+
+          # Wait for ArgoCD CRDs
+          echo "Waiting for ArgoCD CRDs..."
+          for i in {1..10}; do kubectl get crd applicationsets.argoproj.io && break || sleep 5; done
+          kubectl wait --for=condition=established crd/applicationsets.argoproj.io --timeout=60s
+
+          # Apply ApplicationSet and Monitoring
+          kubectl apply -f k8s/argo/applicationset.yaml
+          kubectl apply -f k8s/argo/monitoring.yaml
