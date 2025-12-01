@@ -27,7 +27,7 @@ jobs:
           aws sts get-caller-identity
 
       - name: Test S3 and DynamoDB access (if TF_STATE_BUCKET & TF_STATE_LOCK_TABLE set)
-        if: ${{ secrets.TF_STATE_BUCKET != '' && secrets.TF_STATE_LOCK_TABLE != '' }}
+        if: secrets.TF_STATE_BUCKET != '' && secrets.TF_STATE_LOCK_TABLE != ''
         run: |
           echo "Checking S3 list for bucket: ${{ secrets.TF_STATE_BUCKET }}"
           aws s3 ls s3://${{ secrets.TF_STATE_BUCKET }} || echo "S3 check failed or bucket empty"
