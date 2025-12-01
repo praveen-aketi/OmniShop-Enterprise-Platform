@@ -1,0 +1,20 @@
+global:
+  env: dev
+  dockerUsername: prvnaketi
+
+services:
+  orders:
+    name: orders-service
+    image: orders-service
+    tag: latest
+    replicas: 2
+    port: 8080
+    serviceMonitor: true
+
+  products:
+    name: products-service
+    image: products-service
+    tag: latest
+    replicas: 2
+    port: 8081
+    serviceMonitor: true

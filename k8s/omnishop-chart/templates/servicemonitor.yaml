@@ -1,15 +1,20 @@
+{{- range $key, $val := .Values.services }}
+{{- if $val.serviceMonitor }}
+---
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
-  name: orders-service-monitor
-  namespace: devsecops
+  name: {{ $val.name }}-monitor
+  namespace: {{ $.Release.Namespace }}
   labels:
     release: kube-prometheus-stack
 spec:
   selector:
     matchLabels:
-      app: orders-service
+      app: {{ $val.name }}
   endpoints:
     - port: http
       path: /metrics
       interval: 15s
+{{- end }}
+{{- end }}

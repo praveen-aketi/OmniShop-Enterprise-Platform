@@ -33,21 +33,25 @@ Key capabilities demonstrated:
 
 ```text
 .
-├── .github/workflows   # CI/CD pipelines
-│   ├── app-ci.yml      # Application CI (Build, Test, Scan)
-│   └── infra-deploy.yml# Infrastructure CD (Terraform, ArgoCD)
-├── frontend            # React Frontend Application
-├── infra               # Infrastructure as Code
-│   ├── terraform       # AWS infrastructure (EKS, VPC, etc.)
-│   ├── ansible         # Configuration management
-│   └── iam             # IAM policies and roles
-├── k8s                 # Kubernetes manifests
-│   ├── argo            # Argo CD ApplicationSets and configurations
-│   ├── orders-service  # Order Management System manifests
-│   └── products-service# Product Catalog Service manifests
-├── orders-service      # Python microservice (OMS)
-├── products-service    # Python microservice (PCS)
-└── monitoring          # Observability configurations
+├── .github/workflows       # CI/CD Automation
+│   ├── app-ci.yml          # CI: Build, Test, Scan & Push (Frontend + Backend)
+│   └── infra-deploy.yml    # CD: Infrastructure Provisioning & GitOps Sync
+├── frontend                # React Frontend Application
+│   ├── src/components      # Reusable UI components (Dashboard, Sidebar, etc.)
+│   └── public              # Static assets
+├── infra                   # Infrastructure as Code (IaC)
+│   ├── terraform           # AWS Provisioning (EKS, VPC, IAM, S3, DynamoDB)
+│   ├── ansible             # Configuration Management (Optional)
+│   └── iam                 # IAM Policies & Role Definitions
+├── k8s                     # Kubernetes & GitOps Configuration
+│   ├── argo                # ArgoCD ApplicationSets & Monitoring Stack
+│   └── omnishop-chart      # Helm Chart for Microservices
+│       ├── templates       # K8s Manifest Templates (Deployment, Service, Monitor)
+│       └── values.yaml     # Default Configuration Values
+├── orders-service          # Order Management Microservice (Python/Flask)
+├── products-service        # Product Catalog Microservice (Python/Flask)
+└── monitoring              # Observability Stack Configuration
+    └── elk-stack           # Elasticsearch, Logstash, Kibana setup
 ```
 
 ## ⚡ Getting Started

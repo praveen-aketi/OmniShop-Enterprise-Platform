@@ -1,0 +1,28 @@
+{{- range $key, $val := .Values.services }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $val.name }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    app: {{ $val.name }}
+spec:
+  replicas: {{ $val.replicas }}
+  selector:
+    matchLabels:
+      app: {{ $val.name }}
+  template:
+    metadata:
+      labels:
+        app: {{ $val.name }}
+    spec:
+      containers:
+        - name: {{ $val.name }}
+          image: "docker.io/{{ $.Values.global.dockerUsername }}/{{ $val.image }}:{{ $val.tag }}"
+          ports:
+            - containerPort: {{ $val.port }}
+          env:
+            - name: ENV
+              value: "{{ $.Values.global.env }}"
+{{- end }}

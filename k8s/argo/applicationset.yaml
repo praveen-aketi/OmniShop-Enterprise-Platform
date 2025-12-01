@@ -24,7 +24,7 @@ spec:
       source:
         repoURL: 'https://github.com/praveen-aketi/DevSecOps-practices'
         targetRevision: main
-        path: k8s
+        path: k8s/omnishop-chart
       destination:
         server: '{{cluster}}'
         namespace: '{{namespace}}'
