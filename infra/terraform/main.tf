@@ -69,21 +69,6 @@ module "eks" {
   }
 
   enable_cluster_creator_admin_permissions = true
-
-  access_entries = {
-    # One access entry with a policy associated
-    github_actions = {
-      principal_arn     = "arn:aws:iam::590184002810:role/GitHubAction-OmniShop-Role"
-      policy_associations = {
-        admin = {
-          policy_arn = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
-          access_scope = {
-            type = "cluster"
-          }
-        }
-      }
-    }
-  }
 }
 
 
