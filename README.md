@@ -527,68 +527,440 @@ aws dynamodb delete-item \
 
 ---
 
-## 🧹 Cleanup
+## 🧹 Cleanup & Destroy Infrastructure
 
-### Important: Avoid AWS Charges
+### ⚠️ Important: Avoid AWS Charges
 
-To completely remove all resources and avoid ongoing charges:
+After practicing with this project, it's **critical** to destroy all resources to avoid ongoing AWS charges. Follow these steps carefully in the exact order listed.
 
-### Step 1: Delete Kubernetes Resources
+---
+
+### Step 1: Configure kubectl Access
+
+Before destroying resources, ensure you have access to your EKS cluster:
 
 ```bash
-# Delete all applications from ArgoCD
+# Update kubeconfig
+aws eks update-kubeconfig \
+  --region us-east-1 \
+  --name omnishop-eks-cluster
+
+# Verify connection
+kubectl get nodes
+```
+
+---
+
+### Step 2: Delete ArgoCD Applications
+
+Delete all applications managed by ArgoCD to trigger cleanup of Kubernetes resources:
+
+```bash
+# Delete all OmniShop applications
 kubectl delete applications --all -n argocd
 
-# Delete monitoring stack
+# Verify deletion
+kubectl get applications -n argocd
+```
+
+**Expected Output:** `No resources found in argocd namespace.`
+
+---
+
+### Step 3: Delete Monitoring Stack
+
+Remove the Prometheus and Grafana monitoring stack:
+
+```bash
+# Delete monitoring application
 kubectl delete application kube-prometheus-stack -n argocd
 
+# Or delete the namespace directly
+kubectl delete namespace monitoring
+
 # Wait for resources to be deleted (2-3 minutes)
+kubectl get namespace monitoring
+```
+
+---
+
+### Step 4: Delete All LoadBalancers
+
+**Critical Step:** Terraform cannot delete the VPC if LoadBalancers still exist. You must delete them manually.
+
+```bash
+# Check for any remaining LoadBalancer services
+kubectl get svc --all-namespaces | grep LoadBalancer
+
+# Delete services with LoadBalancer type
+kubectl delete svc <service-name> -n <namespace>
+
+# Verify all LoadBalancers are deleted
 kubectl get svc --all-namespaces | grep LoadBalancer
 ```
 
-### Step 2: Delete Load Balancers
-
-**Important:** Terraform cannot delete the VPC if LoadBalancers still exist.
+**Alternative: Delete via AWS CLI**
 
 ```bash
-# List all load balancers
-aws elbv2 describe-load-balancers --region us-east-1
+# List all load balancers in your region
+aws elbv2 describe-load-balancers \
+  --region us-east-1 \
+  --query 'LoadBalancers[*].[LoadBalancerName,LoadBalancerArn]' \
+  --output table
 
-# Delete each load balancer
+# Delete each load balancer (repeat for all)
 aws elbv2 delete-load-balancer \
   --load-balancer-arn <load-balancer-arn> \
   --region us-east-1
 
-# Repeat for all load balancers
+# Wait 2-3 minutes for deletion to complete
 ```
 
-### Step 3: Run Terraform Destroy
+---
+
+### Step 5: Delete Target Groups
+
+LoadBalancers create target groups that must also be deleted:
 
 ```bash
+# List all target groups
+aws elbv2 describe-target-groups \
+  --region us-east-1 \
+  --query 'TargetGroups[*].[TargetGroupName,TargetGroupArn]' \
+  --output table
+
+# Delete each target group
+aws elbv2 delete-target-group \
+  --target-group-arn <target-group-arn> \
+  --region us-east-1
+```
+
+---
+
+### Step 6: Run Terraform Destroy
+
+Now you can safely destroy the infrastructure:
+
+```bash
+# Navigate to Terraform directory
 cd infra/terraform
 
-# Destroy infrastructure
+# Initialize Terraform (if not already done)
+terraform init \
+  -backend-config="bucket=omnishop-tf-state-<your-unique-id>" \
+  -backend-config="key=terraform.tfstate" \
+  -backend-config="region=us-east-1" \
+  -backend-config="dynamodb_table=omnishop-tf-lock"
+
+# Review what will be destroyed
+terraform plan -destroy -var="aws_region=us-east-1"
+
+# Destroy all infrastructure
 terraform destroy -var="aws_region=us-east-1" -auto-approve
 ```
 
-**If destroy fails:**
+**Expected Duration:** 10-15 minutes
+
+---
+
+### Step 7: Troubleshoot Terraform Destroy Failures
+
+If `terraform destroy` fails, follow these troubleshooting steps:
+
+#### Issue: Security Groups Cannot Be Deleted
+
+**Error:** `DependencyViolation: resource has a dependent object`
+
+**Solution:**
 ```bash
-# Manually delete security groups in AWS Console
-# Then retry terraform destroy
+# List security groups in your VPC
+aws ec2 describe-security-groups \
+  --region us-east-1 \
+  --filters "Name=vpc-id,Values=<your-vpc-id>" \
+  --query 'SecurityGroups[*].[GroupId,GroupName]' \
+  --output table
+
+# Delete security groups manually (except default)
+aws ec2 delete-security-group \
+  --group-id <security-group-id> \
+  --region us-east-1
+
+# Retry terraform destroy
+terraform destroy -var="aws_region=us-east-1" -auto-approve
 ```
 
-### Step 4: Clean Up S3 and DynamoDB
+#### Issue: Network Interfaces Still Attached
+
+**Error:** `Network interface is currently in use`
+
+**Solution:**
+```bash
+# List network interfaces
+aws ec2 describe-network-interfaces \
+  --region us-east-1 \
+  --filters "Name=vpc-id,Values=<your-vpc-id>" \
+  --query 'NetworkInterfaces[*].[NetworkInterfaceId,Status]' \
+  --output table
+
+# Delete network interfaces
+aws ec2 delete-network-interface \
+  --network-interface-id <eni-id> \
+  --region us-east-1
+```
+
+#### Issue: NAT Gateways Not Deleted
+
+**Solution:**
+```bash
+# List NAT gateways
+aws ec2 describe-nat-gateways \
+  --region us-east-1 \
+  --filter "Name=vpc-id,Values=<your-vpc-id>"
+
+# Delete NAT gateways
+aws ec2 delete-nat-gateway \
+  --nat-gateway-id <nat-gateway-id> \
+  --region us-east-1
+
+# Wait 5 minutes for deletion, then retry terraform destroy
+```
+
+---
+
+### Step 8: Clean Up Terraform State Files
+
+After successful infrastructure destruction, clean up Terraform state:
 
 ```bash
-# Empty S3 bucket
-aws s3 rm s3://omnishop-tf-state-<your-unique-id> --recursive
+# Empty the S3 bucket
+aws s3 rm s3://omnishop-tf-state-<your-unique-id> --recursive --region us-east-1
 
-# Delete S3 bucket
-aws s3 rb s3://omnishop-tf-state-<your-unique-id>
+# Delete the S3 bucket
+aws s3 rb s3://omnishop-tf-state-<your-unique-id> --region us-east-1
 
-# Delete DynamoDB table
-aws dynamodb delete-table --table-name omnishop-tf-lock --region us-east-1
+# Delete DynamoDB lock table
+aws dynamodb delete-table \
+  --table-name omnishop-tf-lock \
+  --region us-east-1
 ```
+
+---
+
+### Step 9: Delete IAM Roles (Optional)
+
+If you created IAM roles for this project, delete them:
+
+```bash
+# List IAM roles
+aws iam list-roles \
+  --query 'Roles[?contains(RoleName, `GitHubActions`) || contains(RoleName, `omnishop`)].RoleName' \
+  --output table
+
+# Detach policies from role
+aws iam list-attached-role-policies \
+  --role-name GitHubActionsRole
+
+aws iam detach-role-policy \
+  --role-name GitHubActionsRole \
+  --policy-arn <policy-arn>
+
+# Delete the role
+aws iam delete-role --role-name GitHubActionsRole
+```
+
+---
+
+### Step 10: Verify Complete Cleanup
+
+Ensure all resources are deleted to avoid charges:
+
+```bash
+# Check for EC2 instances
+aws ec2 describe-instances \
+  --region us-east-1 \
+  --filters "Name=instance-state-name,Values=running" \
+  --query 'Reservations[*].Instances[*].[InstanceId,Tags[?Key==`Name`].Value|[0]]' \
+  --output table
+
+# Check for EKS clusters
+aws eks list-clusters --region us-east-1
+
+# Check for VPCs (should only see default VPC)
+aws ec2 describe-vpcs \
+  --region us-east-1 \
+  --query 'Vpcs[*].[VpcId,Tags[?Key==`Name`].Value|[0],IsDefault]' \
+  --output table
+
+# Check for load balancers
+aws elbv2 describe-load-balancers \
+  --region us-east-1 \
+  --query 'LoadBalancers[*].LoadBalancerName' \
+  --output table
+
+# Check for S3 buckets
+aws s3 ls | grep omnishop
+
+# Check for DynamoDB tables
+aws dynamodb list-tables \
+  --region us-east-1 \
+  --query 'TableNames[?contains(@, `omnishop`)]' \
+  --output table
+```
+
+**Expected Result:** All commands should return empty results or only show default AWS resources.
+
+---
+
+### Step 11: Clean Up Local Files (Optional)
+
+Remove local Terraform state and configuration files:
+
+```bash
+# Navigate to project root
+cd <project-root>
+
+# Remove Terraform state files
+rm -rf infra/terraform/.terraform
+rm -f infra/terraform/.terraform.lock.hcl
+rm -f infra/terraform/terraform.tfstate*
+
+# Remove kubectl config (optional)
+kubectl config delete-context <context-name>
+kubectl config delete-cluster omnishop-eks-cluster
+```
+
+---
+
+### 📋 Cleanup Checklist
+
+Use this checklist to ensure complete cleanup:
+
+- [ ] Deleted all ArgoCD applications
+- [ ] Deleted monitoring namespace
+- [ ] Deleted all LoadBalancer services
+- [ ] Deleted all AWS load balancers
+- [ ] Deleted all target groups
+- [ ] Ran `terraform destroy` successfully
+- [ ] Deleted security groups (if needed)
+- [ ] Deleted network interfaces (if needed)
+- [ ] Deleted NAT gateways (if needed)
+- [ ] Deleted S3 bucket for Terraform state
+- [ ] Deleted DynamoDB table for state locking
+- [ ] Deleted IAM roles (optional)
+- [ ] Verified no EC2 instances running
+- [ ] Verified no EKS clusters exist
+- [ ] Verified no extra VPCs exist
+- [ ] Verified no load balancers exist
+- [ ] Verified no S3 buckets with project name
+- [ ] Verified no DynamoDB tables with project name
+
+---
+
+### 💰 Cost Verification
+
+After cleanup, verify you won't incur charges:
+
+1. **Check AWS Billing Dashboard:**
+   - Go to [AWS Billing Console](https://console.aws.amazon.com/billing/)
+   - Review current month charges
+   - Set up billing alerts for future
+
+2. **Enable Cost Explorer:**
+   - View costs by service
+   - Ensure no ongoing charges from this project
+
+3. **Set Up Budget Alerts:**
+   ```bash
+   # Create a budget alert (optional)
+   aws budgets create-budget \
+     --account-id <your-account-id> \
+     --budget file://budget.json
+   ```
+
+---
+
+### ⚡ Quick Destroy Script
+
+For convenience, here's a complete cleanup script:
+
+```bash
+#!/bin/bash
+# cleanup.sh - Complete OmniShop infrastructure cleanup
+
+set -e
+
+echo "🧹 Starting OmniShop cleanup..."
+
+# Step 1: Configure kubectl
+echo "📋 Step 1: Configuring kubectl..."
+aws eks update-kubeconfig --region us-east-1 --name omnishop-eks-cluster || true
+
+# Step 2: Delete ArgoCD applications
+echo "📋 Step 2: Deleting ArgoCD applications..."
+kubectl delete applications --all -n argocd --ignore-not-found=true
+
+# Step 3: Delete monitoring
+echo "📋 Step 3: Deleting monitoring stack..."
+kubectl delete namespace monitoring --ignore-not-found=true
+
+# Step 4: Wait for LoadBalancers to be deleted
+echo "📋 Step 4: Waiting for LoadBalancers to be deleted..."
+sleep 120
+
+# Step 5: Delete remaining LoadBalancers
+echo "📋 Step 5: Deleting AWS load balancers..."
+for lb_arn in $(aws elbv2 describe-load-balancers --region us-east-1 --query 'LoadBalancers[*].LoadBalancerArn' --output text); do
+  echo "Deleting load balancer: $lb_arn"
+  aws elbv2 delete-load-balancer --load-balancer-arn "$lb_arn" --region us-east-1 || true
+done
+
+# Step 6: Wait for LB deletion
+echo "⏳ Waiting for load balancers to be deleted..."
+sleep 60
+
+# Step 7: Delete target groups
+echo "📋 Step 6: Deleting target groups..."
+for tg_arn in $(aws elbv2 describe-target-groups --region us-east-1 --query 'TargetGroups[*].TargetGroupArn' --output text); do
+  echo "Deleting target group: $tg_arn"
+  aws elbv2 delete-target-group --target-group-arn "$tg_arn" --region us-east-1 || true
+done
+
+# Step 8: Terraform destroy
+echo "📋 Step 7: Running Terraform destroy..."
+cd infra/terraform
+terraform destroy -var="aws_region=us-east-1" -auto-approve
+
+# Step 9: Clean up S3 and DynamoDB
+echo "📋 Step 8: Cleaning up S3 and DynamoDB..."
+aws s3 rm s3://omnishop-tf-state-<your-unique-id> --recursive --region us-east-1 || true
+aws s3 rb s3://omnishop-tf-state-<your-unique-id> --region us-east-1 || true
+aws dynamodb delete-table --table-name omnishop-tf-lock --region us-east-1 || true
+
+echo "✅ Cleanup complete! Please verify in AWS Console."
+```
+
+**To use this script:**
+1. Save as `cleanup.sh`
+2. Update `<your-unique-id>` with your actual bucket name
+3. Make executable: `chmod +x cleanup.sh`
+4. Run: `./cleanup.sh`
+
+---
+
+### 🎓 Lessons Learned
+
+After practicing with this project, you should understand:
+
+- ✅ How to provision AWS infrastructure with Terraform
+- ✅ How to deploy microservices to Kubernetes
+- ✅ How to implement GitOps with ArgoCD
+- ✅ How to set up monitoring with Prometheus and Grafana
+- ✅ How to implement CI/CD pipelines with GitHub Actions
+- ✅ **How to properly destroy cloud infrastructure to avoid costs**
+
+---
+
+**Remember:** Always verify complete cleanup in the AWS Console to ensure you're not incurring unexpected charges!
 
 ---
 
