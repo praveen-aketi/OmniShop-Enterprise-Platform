@@ -18,4 +18,14 @@ services:
     tag: latest
     replicas: 2
     port: 8081
+    type: LoadBalancer
     serviceMonitor: true
+
+  frontend:
+    name: frontend
+    image: omnishop-frontend
+    tag: latest
+    replicas: 2
+    port: 80
+    type: LoadBalancer
+    serviceMonitor: false

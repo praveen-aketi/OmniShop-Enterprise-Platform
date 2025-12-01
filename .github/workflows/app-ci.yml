@@ -82,20 +82,49 @@ jobs:
           IMAGE_B=${{ secrets.DOCKER_USERNAME }}/products-service:${{ github.sha }}
           trivy image --severity CRITICAL,HIGH --exit-code 1 --no-progress $IMAGE_B
 
-  build-frontend:
+  build-and-push-frontend:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       
-      - name: Setup Node.js
-        uses: actions/setup-node@v3
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v2
         with:
-          node-version: '18'
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
           
-      - name: Install Dependencies
-        working-directory: frontend
-        run: npm ci
-        
-      - name: Build Frontend
-        working-directory: frontend
-        run: npm run build
+      - name: Build and push frontend
+        uses: docker/build-push-action@v4
+        with:
+          context: ./frontend
+          push: true
+          tags: ${{ secrets.DOCKER_USERNAME }}/omnishop-frontend:${{ github.sha }},${{ secrets.DOCKER_USERNAME }}/omnishop-frontend:latest
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3.5.0
+        with:
+          cosign-release: 'v2.2.4'
+
+      - name: Sign image with cosign
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+        run: |
+          IMAGE=${{ secrets.DOCKER_USERNAME }}/omnishop-frontend:${{ github.sha }}
+          if [ -n "${{ secrets.COSIGN_KEY_ARN }}" ]; then
+            cosign sign --key "${{ secrets.COSIGN_KEY_ARN }}" $IMAGE
+          else
+            cosign sign -y $IMAGE
+          fi
+
+      - name: Install Trivy
+        run: |
+          sudo apt-get update && sudo apt-get install -y wget apt-transport-https gnupg lsb-release
+          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo apt-key add -
+          echo deb https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main | sudo tee /etc/apt/sources.list.d/trivy.list
+          sudo apt-get update
+          sudo apt-get install -y trivy
+
+      - name: Trivy scan frontend
+        run: |
+          IMAGE=${{ secrets.DOCKER_USERNAME }}/omnishop-frontend:${{ github.sha }}
+          trivy image --severity CRITICAL,HIGH --exit-code 1 --no-progress $IMAGE
