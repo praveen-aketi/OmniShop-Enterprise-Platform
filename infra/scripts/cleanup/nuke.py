@@ -514,10 +514,18 @@ def main():
     parser.add_argument("--state-bucket", help="Terraform State S3 Bucket Name (optional, will auto-discover if omitted)")
     parser.add_argument("--lock-table", default='omnishop-tf-lock', help="Terraform Lock DynamoDB Table")
     parser.add_argument("--force", action='store_true', help="Force delete resources without Terraform state")
-    parser.add_argument("--projects", default="devsecops,omnishop", help="Comma-separated list of project identifiers to target (default: devsecops,omnishop)")
+    parser.add_argument("--projects", help="Comma-separated list of project identifiers to target (e.g., 'omnishop,devsecops')")
     
     args = parser.parse_args()
     
+    if not args.projects:
+        print("⚠️  No project identifiers provided.")
+        user_input = input("Please enter project names to target (comma-separated, e.g., 'omnishop'): ")
+        if not user_input.strip():
+            print("❌ Error: Project identifiers are required to safely identify resources.")
+            sys.exit(1)
+        args.projects = user_input
+
     project_identifiers = [p.strip() for p in args.projects.split(',')]
 
     # Auto-discover state bucket if not provided
