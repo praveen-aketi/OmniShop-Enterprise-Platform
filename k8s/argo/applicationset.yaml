@@ -22,7 +22,7 @@ spec:
     spec:
       project: default
       source:
-        repoURL: 'https://github.com/praveen-aketi/OmniShop-Enterprise-Platform'
+        repoURL: 'https://github.com/your-username/OmniShop-Enterprise-Platform'
         targetRevision: main
         path: k8s/omnishop-chart
       destination:

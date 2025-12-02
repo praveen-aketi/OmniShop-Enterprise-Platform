@@ -58,3 +58,9 @@ variable "private_subnet_cidrs" {
   default     = ["10.0.11.0/24", "10.0.12.0/24", "10.0.13.0/24"]
 }
 
+variable "admin_user_arn" {
+  description = "ARN of an admin user to grant cluster access to (optional)"
+  type        = string
+  default     = null
+}
+

@@ -1,7 +1,7 @@
 param(
     [string]$Region = "us-east-1",
-    [string]$GitHubOrg = "praveen-aketi",
-    [string]$GitHubRepo = "DevSecOps-practices", 
+    [string]$GitHubOrg = "your-github-org",
+    [string]$GitHubRepo = "your-repo-name", 
     [string]$BucketName = "omnishop-tf-state-$((Get-Random))",
     [string]$DynamoTableName = "omnishop-tf-lock"
 )
