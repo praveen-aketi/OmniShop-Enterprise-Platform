@@ -4,6 +4,7 @@ import sys
 import subprocess
 import logging
 import time
+import os
 from abc import ABC, abstractmethod
 
 # Configure Logging
@@ -138,12 +139,7 @@ class AWSCleaner(CloudCleaner):
         except Exception as e:
             logger.warning(f"Error deleting DynamoDB table: {e}")
 
-import os
 
-# ... (imports remain the same)
-
-class AWSCleaner(CloudCleaner):
-    # ... (init and other methods remain the same)
 
     def verify_cleanup(self):
         """Verifies if resources are actually deleted."""
