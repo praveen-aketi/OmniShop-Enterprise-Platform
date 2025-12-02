@@ -218,12 +218,31 @@ class AWSCleaner(CloudCleaner):
         """Force deletes infrastructure when Terraform state is missing."""
         logger.info(f"⚠️  STARTING FORCE DELETE for projects: {self.project_identifiers}")
         
-        # 0. Delete EKS Clusters
+        # 0. Delete EKS Clusters and Node Groups
         logger.info("Checking for EKS Clusters...")
         try:
             clusters = self.eks.list_clusters().get('clusters', [])
             for cluster_name in clusters:
                 if self._is_project_resource(cluster_name):
+                    logger.info(f"Processing EKS Cluster: {cluster_name}")
+                    
+                    # 0.1 Delete Node Groups first
+                    try:
+                        nodegroups = self.eks.list_nodegroups(clusterName=cluster_name).get('nodegroups', [])
+                        for ng in nodegroups:
+                            logger.info(f"Deleting Node Group: {ng}")
+                            self.eks.delete_nodegroup(clusterName=cluster_name, nodegroupName=ng)
+                        
+                        if nodegroups:
+                            logger.info("Waiting for Node Groups to delete...")
+                            waiter = self.eks.get_waiter('nodegroup_deleted')
+                            for ng in nodegroups:
+                                waiter.wait(clusterName=cluster_name, nodegroupName=ng)
+                            logger.info("Node Groups deleted.")
+                    except Exception as e:
+                        logger.warning(f"Error deleting node groups for {cluster_name}: {e}")
+
+                    # 0.2 Delete Cluster
                     logger.info(f"Deleting EKS Cluster: {cluster_name}")
                     try:
                         self.eks.delete_cluster(name=cluster_name)
@@ -232,6 +251,8 @@ class AWSCleaner(CloudCleaner):
                         waiter = self.eks.get_waiter('cluster_deleted')
                         waiter.wait(name=cluster_name)
                         logger.info(f"Cluster {cluster_name} deleted.")
+                    except self.eks.exceptions.ResourceNotFoundException:
+                        logger.info(f"Cluster {cluster_name} already deleted.")
                     except Exception as e:
                         logger.error(f"Failed to delete cluster {cluster_name}: {e}")
         except Exception as e:
