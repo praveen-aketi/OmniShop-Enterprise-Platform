@@ -147,6 +147,116 @@ class AWSCleaner(CloudCleaner):
         except Exception as e:
             logger.warning(f"Error deleting DynamoDB table: {e}")
 
+    def force_delete_infrastructure(self):
+        """Force deletes infrastructure when Terraform state is missing."""
+        logger.info("⚠️  STARTING FORCE DELETE: Scanning for lingering resources...")
+        
+        # Find VPCs matching project tags
+        vpcs = self.ec2.describe_vpcs(Filters=[
+            {'Name': 'tag:Name', 'Values': ['*devsecops*', '*omnishop*', '*eks*']}
+        ])['Vpcs']
+        
+        if not vpcs:
+            logger.info("No project VPCs found for force deletion.")
+            return
+
+        for vpc in vpcs:
+            vpc_id = vpc['VpcId']
+            logger.info(f"💣 Nuke target acquired: VPC {vpc_id}")
+            
+            # 0. Terminate EC2 Instances
+            instances = self.ec2.describe_instances(Filters=[
+                {'Name': 'vpc-id', 'Values': [vpc_id]},
+                {'Name': 'instance-state-name', 'Values': ['running', 'stopped', 'stopping', 'pending']}
+            ])
+            instance_ids = [i['InstanceId'] for r in instances['Reservations'] for i in r['Instances']]
+            
+            if instance_ids:
+                logger.info(f"Terminating {len(instance_ids)} EC2 instances: {instance_ids}")
+                self.ec2.terminate_instances(InstanceIds=instance_ids)
+                
+                logger.info("Waiting for instances to terminate...")
+                waiter = self.ec2.get_waiter('instance_terminated')
+                waiter.wait(InstanceIds=instance_ids)
+                logger.info("Instances terminated.")
+
+            # 1. Delete NAT Gateways
+            nats = self.ec2.describe_nat_gateways(Filters=[{'Name': 'vpc-id', 'Values': [vpc_id]}])['NatGateways']
+            for nat in nats:
+                if nat['State'] != 'deleted':
+                    logger.info(f"Deleting NAT Gateway: {nat['NatGatewayId']}")
+                    self.ec2.delete_nat_gateway(NatGatewayId=nat['NatGatewayId'])
+            
+            # Wait for NATs to delete (critical for dependencies)
+            if nats:
+                logger.info("Waiting for NAT Gateways to delete...")
+                while True:
+                    remaining = self.ec2.describe_nat_gateways(Filters=[
+                        {'Name': 'vpc-id', 'Values': [vpc_id]},
+                        {'Name': 'state', 'Values': ['pending', 'available', 'deleting']}
+                    ])['NatGateways']
+                    if not remaining:
+                        break
+                    time.sleep(5)
+
+            # 2. Delete Internet Gateways
+            igws = self.ec2.describe_internet_gateways(Filters=[{'Name': 'attachment.vpc-id', 'Values': [vpc_id]}])['InternetGateways']
+            for igw in igws:
+                logger.info(f"Detaching and Deleting IGW: {igw['InternetGatewayId']}")
+                self.ec2.detach_internet_gateway(InternetGatewayId=igw['InternetGatewayId'], VpcId=vpc_id)
+                self.ec2.delete_internet_gateway(InternetGatewayId=igw['InternetGatewayId'])
+
+            # 3. Delete Subnets
+            subnets = self.ec2.describe_subnets(Filters=[{'Name': 'vpc-id', 'Values': [vpc_id]}])['Subnets']
+            for subnet in subnets:
+                logger.info(f"Deleting Subnet: {subnet['SubnetId']}")
+                try:
+                    self.ec2.delete_subnet(SubnetId=subnet['SubnetId'])
+                except Exception as e:
+                    logger.warning(f"Failed to delete subnet {subnet['SubnetId']}: {e}")
+
+            # 4. Delete Route Tables (except main)
+            rts = self.ec2.describe_route_tables(Filters=[{'Name': 'vpc-id', 'Values': [vpc_id]}])['RouteTables']
+            for rt in rts:
+                if not any(assoc['Main'] for assoc in rt['Associations']):
+                    logger.info(f"Deleting Route Table: {rt['RouteTableId']}")
+                    try:
+                        self.ec2.delete_route_table(RouteTableId=rt['RouteTableId'])
+                    except Exception as e:
+                        logger.warning(f"Failed to delete RT {rt['RouteTableId']}: {e}")
+
+            # 5. Delete Security Groups
+            sgs = self.ec2.describe_security_groups(Filters=[{'Name': 'vpc-id', 'Values': [vpc_id]}])['SecurityGroups']
+            for sg in sgs:
+                if sg['GroupName'] == 'default': continue
+                logger.info(f"Revoking rules for SG: {sg['GroupId']}")
+                try:
+                    if sg['IpPermissions']:
+                        self.ec2.revoke_security_group_ingress(GroupId=sg['GroupId'], IpPermissions=sg['IpPermissions'])
+                    if sg['IpPermissionsEgress']:
+                        self.ec2.revoke_security_group_egress(GroupId=sg['GroupId'], IpPermissions=sg['IpPermissionsEgress'])
+                except Exception as e:
+                    logger.warning(f"Error revoking rules for {sg['GroupId']}: {e}")
+            
+            # Wait a moment for rule revocation
+            time.sleep(2)
+            
+            for sg in sgs:
+                if sg['GroupName'] == 'default': continue
+                logger.info(f"Deleting SG: {sg['GroupId']}")
+                try:
+                    self.ec2.delete_security_group(GroupId=sg['GroupId'])
+                except Exception as e:
+                    logger.warning(f"Failed to delete SG {sg['GroupId']}: {e}")
+
+            # 6. Delete VPC
+            logger.info(f"Deleting VPC: {vpc_id}")
+            try:
+                self.ec2.delete_vpc(VpcId=vpc_id)
+                logger.info("VPC Deleted.")
+            except Exception as e:
+                logger.error(f"Failed to delete VPC {vpc_id}: {e}")
+
     def verify_cleanup(self):
         """Verifies if resources are actually deleted."""
         logger.info("\n🔍 Verifying Cleanup Status...")
@@ -214,11 +324,12 @@ def main():
     parser.add_argument("--tf-dir", default=default_tf_dir, help="Path to Terraform directory")
     parser.add_argument("--state-bucket", help="Terraform State S3 Bucket Name (optional, will auto-discover if omitted)")
     parser.add_argument("--lock-table", default='omnishop-tf-lock', help="Terraform Lock DynamoDB Table")
+    parser.add_argument("--force", action='store_true', help="Force delete resources without Terraform state")
     
     args = parser.parse_args()
 
     # Auto-discover state bucket if not provided
-    if not args.state_bucket:
+    if not args.state_bucket and not args.force:
         print("🔍 Searching for Terraform state bucket...")
         try:
             s3_client = boto3.client('s3', region_name=args.region)
@@ -249,12 +360,24 @@ def main():
         print(f"⚠️  WARNING: This will DESTROY all infrastructure in {args.region}.")
         print(f"   State Bucket: {bucket_msg}")
         print(f"   Terraform Directory: {args.tf_dir}")
+        print(f"   Force Mode: {'ENABLED' if args.force else 'DISABLED'}")
         
         confirm = input("Are you sure you want to proceed? (yes/no): ")
         
         if confirm.lower() == 'yes':
             cleaner.cleanup_load_balancers()
-            cleaner.run_terraform_destroy()
+            
+            if args.force:
+                cleaner.force_delete_infrastructure()
+            else:
+                cleaner.run_terraform_destroy()
+                
+                # If TF destroy was skipped or failed, ask for force delete
+                if not args.state_bucket:
+                    force_confirm = input("\nTerraform state missing. Do you want to FORCE DELETE remaining resources (VPCs, Subnets, etc.)? (yes/no): ")
+                    if force_confirm.lower() == 'yes':
+                        cleaner.force_delete_infrastructure()
+
             cleaner.cleanup_state_store()
             cleaner.verify_cleanup()
             logger.info("Cleanup sequence complete.")
