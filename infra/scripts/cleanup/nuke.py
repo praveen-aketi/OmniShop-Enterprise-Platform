@@ -147,7 +147,61 @@ class AWSCleaner(CloudCleaner):
         except Exception as e:
             logger.warning(f"Error deleting DynamoDB table: {e}")
 
-# ... (verify_cleanup remains the same) ...
+    def verify_cleanup(self):
+        """Verifies if resources are actually deleted."""
+        logger.info("\n🔍 Verifying Cleanup Status...")
+        
+        status_report = []
+        
+        # 1. Check EKS Clusters
+        try:
+            clusters = self.eks.list_clusters().get('clusters', [])
+            if not clusters:
+                status_report.append("✅ EKS Clusters: Deleted")
+            else:
+                status_report.append(f"❌ EKS Clusters: {len(clusters)} remaining")
+        except Exception as e:
+            logger.warning(f"Error checking EKS clusters: {e}")
+            status_report.append("⚠️ EKS Clusters: Check Failed")
+        
+        # 2. Check Load Balancers
+        clb_count = len(self.elb.describe_load_balancers().get('LoadBalancerDescriptions', []))
+        alb_count = len(self.elbv2.describe_load_balancers().get('LoadBalancers', []))
+        
+        if clb_count + alb_count == 0:
+            status_report.append("✅ Load Balancers: Deleted")
+        else:
+            status_report.append(f"❌ Load Balancers: {clb_count + alb_count} remaining")
+
+        # 3. Check VPCs (Non-default)
+        vpcs = self.ec2.describe_vpcs(Filters=[{'Name': 'isDefault', 'Values': ['false']}])['Vpcs']
+        if not vpcs:
+            status_report.append("✅ Custom VPCs: Deleted")
+        else:
+            status_report.append(f"❌ Custom VPCs: {len(vpcs)} remaining")
+            
+        # 4. Check Subnets (Non-default)
+        if vpcs:
+            vpc_ids = [v['VpcId'] for v in vpcs]
+            subnets = self.ec2.describe_subnets(Filters=[{'Name': 'vpc-id', 'Values': vpc_ids}])['Subnets']
+            status_report.append(f"❌ Subnets: {len(subnets)} remaining (in custom VPCs)")
+        else:
+            status_report.append("✅ Subnets: Deleted")
+
+        # 5. Check NAT Gateways
+        nats = self.ec2.describe_nat_gateways(Filters=[{'Name': 'state', 'Values': ['available', 'pending']}])['NatGateways']
+        if not nats:
+            status_report.append("✅ NAT Gateways: Deleted")
+        else:
+            status_report.append(f"❌ NAT Gateways: {len(nats)} remaining")
+
+        # Print Report
+        print("\n" + "="*40)
+        print("   CLEANUP VERIFICATION REPORT")
+        print("="*40)
+        for line in status_report:
+            print(line)
+        print("="*40 + "\n")
 
 def main():
     # Calculate absolute path to terraform dir relative to this script
