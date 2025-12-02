@@ -535,10 +535,13 @@ After practicing with this project, it's **critical** to destroy all resources t
 
 ### Automated Cleanup Script
 
-The script `infra/scripts/cleanup/nuke.py` automates the following:
+The script `infra/scripts/cleanup/nuke.py` automates the complete destruction of the environment:
+
 1.  **Deletes Kubernetes Load Balancers**: Removes ELBs/ALBs that often block VPC deletion.
 2.  **Runs Terraform Destroy**: Destroys the EKS cluster, VPC, and other infrastructure.
-3.  **Cleans State Storage**: Deletes the Terraform state S3 bucket and DynamoDB lock table.
+3.  **Force Delete Mode**: Can bypass Terraform to directly delete lingering resources (VPCs, Subnets, NAT Gateways, IAM Roles, etc.) if state is lost.
+4.  **Cleans State Storage**: Deletes the Terraform state S3 bucket and DynamoDB lock table.
+5.  **Verifies Cleanup**: Runs a comprehensive check to ensure no resources remain.
 
 #### Usage
 
@@ -548,15 +551,25 @@ The script `infra/scripts/cleanup/nuke.py` automates the following:
     ```
 
 2.  **Run the Script**:
+    
+    **Standard Cleanup (Recommended):**
     ```bash
-    python infra/scripts/cleanup/nuke.py \
-      --state-bucket omnishop-tf-state-<your-unique-id> \
-      --region us-east-1
+    python infra/scripts/cleanup/nuke.py --region us-east-1
+    ```
+    *The script will auto-discover your state bucket.*
+
+    **Force Delete (If Terraform fails or state is lost):**
+    ```bash
+    python infra/scripts/cleanup/nuke.py --region us-east-1 --force
     ```
 
-    *Replace `<your-unique-id>` with your actual bucket name.*
+    **Multi-Project Cleanup:**
+    ```bash
+    python infra/scripts/cleanup/nuke.py --region us-east-1 --projects my-project,test-app
+    ```
 
 3.  **Confirm**: Type `yes` when prompted to proceed.
+4.  **Review Report**: Check the final "CLEANUP VERIFICATION REPORT" to confirm all resources are deleted.
 
 ### Manual Verification
 

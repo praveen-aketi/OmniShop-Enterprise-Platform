@@ -27,17 +27,23 @@ class CloudCleaner(ABC):
         pass
 
 class AWSCleaner(CloudCleaner):
-    def __init__(self, region, tf_dir, state_bucket, lock_table):
+    def __init__(self, region, tf_dir, state_bucket, lock_table, project_identifiers):
         self.region = region
         self.tf_dir = tf_dir
         self.state_bucket = state_bucket
         self.lock_table = lock_table
+        self.project_identifiers = project_identifiers
         self.ec2 = boto3.client('ec2', region_name=region)
         self.eks = boto3.client('eks', region_name=region)
         self.elb = boto3.client('elb', region_name=region)
         self.elbv2 = boto3.client('elbv2', region_name=region)
         self.s3 = boto3.resource('s3', region_name=region)
         self.dynamodb = boto3.client('dynamodb', region_name=region)
+
+    def _is_project_resource(self, name):
+        """Helper to check if a resource name matches any project identifier."""
+        if not name: return False
+        return any(pid in name for pid in self.project_identifiers)
 
     def cleanup_load_balancers(self):
         """Deletes Classic and Application Load Balancers to free up VPCs."""
@@ -48,11 +54,26 @@ class AWSCleaner(CloudCleaner):
             lbs = self.elb.describe_load_balancers().get('LoadBalancerDescriptions', [])
             for lb in lbs:
                 name = lb['LoadBalancerName']
+                # Clean up if it matches project or is a k8s LB (often starts with a hash, so we might need to be aggressive or check tags)
+                # For safety, let's rely on tags if possible, or assume all LBs in a sandbox account are fair game if they look like k8s ones.
+                # But to be safe for "any project", let's check tags or name match.
+                # K8s LBs usually don't have the project name in the LB name itself, but in tags.
+                
+                is_target = False
                 try:
-                    logger.info(f"Deleting Classic LB: {name}")
-                    self.elb.delete_load_balancer(LoadBalancerName=name)
-                except Exception as e:
-                    logger.warning(f"Failed to delete Classic LB {name}: {e}")
+                    tags = self.elb.describe_tags(LoadBalancerNames=[name])['TagDescriptions'][0]['Tags']
+                    is_target = any(t['Key'] == 'kubernetes.io/cluster/' + pid for pid in self.project_identifiers for t in tags) or \
+                                any(pid in t['Value'] for pid in self.project_identifiers for t in tags)
+                except:
+                    pass
+                
+                # Fallback: if we are in force mode or it matches name
+                if self._is_project_resource(name) or is_target:
+                    try:
+                        logger.info(f"Deleting Classic LB: {name}")
+                        self.elb.delete_load_balancer(LoadBalancerName=name)
+                    except Exception as e:
+                        logger.warning(f"Failed to delete Classic LB {name}: {e}")
         except Exception as e:
             logger.warning(f"Error listing Classic LBs: {e}")
 
@@ -61,11 +82,22 @@ class AWSCleaner(CloudCleaner):
             lbs = self.elbv2.describe_load_balancers().get('LoadBalancers', [])
             for lb in lbs:
                 arn = lb['LoadBalancerArn']
+                name = lb['LoadBalancerName']
+                
+                is_target = False
                 try:
-                    logger.info(f"Deleting V2 LB: {arn}")
-                    self.elbv2.delete_load_balancer(LoadBalancerArn=arn)
-                except Exception as e:
-                    logger.warning(f"Failed to delete V2 LB {arn}: {e}")
+                    tags = self.elbv2.describe_tags(ResourceArns=[arn])['TagDescriptions'][0]['Tags']
+                    is_target = any(pid in t['Value'] for pid in self.project_identifiers for t in tags) or \
+                                any('kubernetes.io/cluster' in t['Key'] for t in tags) # Broad check for k8s LBs
+                except:
+                    pass
+
+                if self._is_project_resource(name) or is_target:
+                    try:
+                        logger.info(f"Deleting V2 LB: {name}")
+                        self.elbv2.delete_load_balancer(LoadBalancerArn=arn)
+                    except Exception as e:
+                        logger.warning(f"Failed to delete V2 LB {name}: {e}")
         except Exception as e:
             logger.warning(f"Error listing V2 LBs: {e}")
             
@@ -149,14 +181,14 @@ class AWSCleaner(CloudCleaner):
 
     def force_delete_infrastructure(self):
         """Force deletes infrastructure when Terraform state is missing."""
-        logger.info("⚠️  STARTING FORCE DELETE: Scanning for lingering resources...")
+        logger.info(f"⚠️  STARTING FORCE DELETE for projects: {self.project_identifiers}")
         
         # 0. Delete EKS Clusters
         logger.info("Checking for EKS Clusters...")
         try:
             clusters = self.eks.list_clusters().get('clusters', [])
             for cluster_name in clusters:
-                if 'devsecops' in cluster_name or 'omnishop' in cluster_name:
+                if self._is_project_resource(cluster_name):
                     logger.info(f"Deleting EKS Cluster: {cluster_name}")
                     try:
                         self.eks.delete_cluster(name=cluster_name)
@@ -176,16 +208,19 @@ class AWSCleaner(CloudCleaner):
             logs = boto3.client('logs', region_name=self.region)
             log_groups = logs.describe_log_groups(logGroupNamePrefix='/aws/eks/')['logGroups']
             for lg in log_groups:
-                if 'devsecops' in lg['logGroupName'] or 'omnishop' in lg['logGroupName']:
+                if self._is_project_resource(lg['logGroupName']):
                     logger.info(f"Deleting Log Group: {lg['logGroupName']}")
                     logs.delete_log_group(logGroupName=lg['logGroupName'])
         except Exception as e:
             logger.warning(f"Error deleting log groups: {e}")
 
         # Find VPCs matching project tags
-        vpcs = self.ec2.describe_vpcs(Filters=[
-            {'Name': 'tag:Name', 'Values': ['*devsecops*', '*omnishop*', '*eks*']}
-        ])['Vpcs']
+        # We look for Name tags containing any of the project identifiers
+        filters = [{'Name': 'tag:Name', 'Values': [f'*{pid}*' for pid in self.project_identifiers]}]
+        # Also add 'eks' to catch generic EKS VPCs if they are tagged with project name elsewhere, 
+        # but let's stick to project identifiers to be safe for "any project".
+        
+        vpcs = self.ec2.describe_vpcs(Filters=filters)['Vpcs']
         
         if not vpcs:
             logger.info("No project VPCs found for force deletion.")
@@ -231,7 +266,7 @@ class AWSCleaner(CloudCleaner):
 
             # 4. Release Elastic IPs
             # Note: EIPs are often associated with NAT Gateways, so release them after NAT deletion
-            eips = self.ec2.describe_addresses(Filters=[{'Name': 'tag:Name', 'Values': ['*devsecops*', '*omnishop*']}])['Addresses']
+            eips = self.ec2.describe_addresses(Filters=[{'Name': 'tag:Name', 'Values': [f'*{pid}*' for pid in self.project_identifiers]}])['Addresses']
             for eip in eips:
                 logger.info(f"Releasing Elastic IP: {eip['AllocationId']}")
                 try:
@@ -309,16 +344,9 @@ class AWSCleaner(CloudCleaner):
                 arn = provider['Arn']
                 try:
                     tags = iam.list_open_id_connect_provider_tags(OpenIDConnectProviderArn=arn)['Tags']
-                    is_project_oidc = any(t['Key'] == 'Name' and ('devsecops' in t['Value'] or 'omnishop' in t['Value']) for t in tags)
-                    
-                    # Also check if the ARN contains the cluster ID pattern if tags are missing
-                    # (EKS OIDC ARNs usually end with the cluster ID)
+                    is_project_oidc = any(t['Key'] == 'Name' and self._is_project_resource(t['Value']) for t in tags)
                     
                     if is_project_oidc or 'eks' in arn: 
-                        # 'eks' in ARN is a bit broad, but for a nuke script on a sandbox it's okay. 
-                        # Better to rely on the fact that we are nuking the account's region resources.
-                        # But OIDC is global. Let's be careful. 
-                        # EKS OIDC URLs look like: oidc.eks.us-east-1.amazonaws.com/id/EXAMPLED539D4633E53DE1B71EXAMPLE
                         logger.info(f"Deleting OIDC Provider: {arn}")
                         iam.delete_open_id_connect_provider(OpenIDConnectProviderArn=arn)
                 except Exception as e:
@@ -331,7 +359,7 @@ class AWSCleaner(CloudCleaner):
         try:
             roles = iam.list_roles()['Roles']
             for role in roles:
-                if 'devsecops' in role['RoleName'] or 'omnishop' in role['RoleName'] or 'eks-cluster-role' in role['RoleName']:
+                if self._is_project_resource(role['RoleName']) or 'eks-cluster-role' in role['RoleName']:
                     logger.info(f"Deleting IAM Role: {role['RoleName']}")
                     try:
                         # Detach all managed policies
@@ -366,13 +394,9 @@ class AWSCleaner(CloudCleaner):
             # Scope to Local (Customer Managed) policies
             policies = iam.list_policies(Scope='Local')['Policies']
             for p in policies:
-                if 'devsecops' in p['PolicyName'] or 'omnishop' in p['PolicyName'] or 'AWSLoadBalancerController' in p['PolicyName']:
+                if self._is_project_resource(p['PolicyName']) or 'AWSLoadBalancerController' in p['PolicyName']:
                     logger.info(f"Deleting IAM Policy: {p['PolicyName']}")
                     try:
-                        # Detach from all entities first (Users, Groups, Roles)
-                        # This is expensive, but necessary for force delete
-                        # For now, assume roles are deleted above.
-                        
                         # Delete policy versions (except default)
                         versions = iam.list_policy_versions(PolicyArn=p['Arn'])['Versions']
                         for v in versions:
@@ -402,11 +426,13 @@ class AWSCleaner(CloudCleaner):
         # 1. Check EKS Clusters
         try:
             clusters = self.eks.list_clusters().get('clusters', [])
-            status_report.append(check_status("EKS Clusters", len(clusters)))
+            project_clusters = [c for c in clusters if self._is_project_resource(c)]
+            status_report.append(check_status("EKS Clusters", len(project_clusters)))
         except Exception as e:
             status_report.append("⚠️ EKS Clusters: Check Failed")
         
         # 2. Check Load Balancers
+        # (Simplified check: just count all LBs as it's hard to filter by project without tags sometimes)
         clb = self.elb.describe_load_balancers().get('LoadBalancerDescriptions', [])
         alb = self.elbv2.describe_load_balancers().get('LoadBalancers', [])
         status_report.append(check_status("Load Balancers", len(clb) + len(alb)))
@@ -456,11 +482,11 @@ class AWSCleaner(CloudCleaner):
         iam = boto3.client('iam')
         try:
             roles = iam.list_roles()['Roles']
-            project_roles = [r for r in roles if 'devsecops' in r['RoleName'] or 'omnishop' in r['RoleName']]
+            project_roles = [r for r in roles if self._is_project_resource(r['RoleName'])]
             status_report.append(check_status("IAM Roles", len(project_roles)))
             
             policies = iam.list_policies(Scope='Local')['Policies']
-            project_policies = [p for p in policies if 'devsecops' in p['PolicyName'] or 'omnishop' in p['PolicyName']]
+            project_policies = [p for p in policies if self._is_project_resource(p['PolicyName'])]
             status_report.append(check_status("IAM Policies", len(project_policies)))
         except Exception:
             status_report.append("⚠️ IAM Checks: Failed")
@@ -488,8 +514,11 @@ def main():
     parser.add_argument("--state-bucket", help="Terraform State S3 Bucket Name (optional, will auto-discover if omitted)")
     parser.add_argument("--lock-table", default='omnishop-tf-lock', help="Terraform Lock DynamoDB Table")
     parser.add_argument("--force", action='store_true', help="Force delete resources without Terraform state")
+    parser.add_argument("--projects", default="devsecops,omnishop", help="Comma-separated list of project identifiers to target (default: devsecops,omnishop)")
     
     args = parser.parse_args()
+    
+    project_identifiers = [p.strip() for p in args.projects.split(',')]
 
     # Auto-discover state bucket if not provided
     if not args.state_bucket and not args.force:
@@ -517,10 +546,11 @@ def main():
             print(f"⚠️ Error during bucket discovery: {e}")
 
     if args.cloud == 'aws':
-        cleaner = AWSCleaner(args.region, args.tf_dir, args.state_bucket, args.lock_table)
+        cleaner = AWSCleaner(args.region, args.tf_dir, args.state_bucket, args.lock_table, project_identifiers)
         
         bucket_msg = args.state_bucket if args.state_bucket else "NONE (Skipping TF Destroy)"
         print(f"⚠️  WARNING: This will DESTROY all infrastructure in {args.region}.")
+        print(f"   Projects: {project_identifiers}")
         print(f"   State Bucket: {bucket_msg}")
         print(f"   Terraform Directory: {args.tf_dir}")
         print(f"   Force Mode: {'ENABLED' if args.force else 'DISABLED'}")
