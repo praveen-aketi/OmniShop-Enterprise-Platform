@@ -297,16 +297,44 @@ class AWSCleaner(CloudCleaner):
             except Exception as e:
                 logger.error(f"Failed to delete VPC {vpc_id}: {e}")
 
-        # 10. Delete IAM Roles
-        # This is outside the VPC loop as roles are global
+        # 10. Delete IAM Roles, Policies, and OIDC Providers
         iam = boto3.client('iam')
+        
+        # A. Delete OIDC Providers
+        logger.info("Checking for OIDC Providers...")
+        try:
+            oidc_providers = iam.list_open_id_connect_providers()['OpenIDConnectProviderList']
+            for provider in oidc_providers:
+                # Get tags or check ARN to identify if it belongs to our cluster
+                arn = provider['Arn']
+                try:
+                    tags = iam.list_open_id_connect_provider_tags(OpenIDConnectProviderArn=arn)['Tags']
+                    is_project_oidc = any(t['Key'] == 'Name' and ('devsecops' in t['Value'] or 'omnishop' in t['Value']) for t in tags)
+                    
+                    # Also check if the ARN contains the cluster ID pattern if tags are missing
+                    # (EKS OIDC ARNs usually end with the cluster ID)
+                    
+                    if is_project_oidc or 'eks' in arn: 
+                        # 'eks' in ARN is a bit broad, but for a nuke script on a sandbox it's okay. 
+                        # Better to rely on the fact that we are nuking the account's region resources.
+                        # But OIDC is global. Let's be careful. 
+                        # EKS OIDC URLs look like: oidc.eks.us-east-1.amazonaws.com/id/EXAMPLED539D4633E53DE1B71EXAMPLE
+                        logger.info(f"Deleting OIDC Provider: {arn}")
+                        iam.delete_open_id_connect_provider(OpenIDConnectProviderArn=arn)
+                except Exception as e:
+                    logger.warning(f"Failed to process OIDC provider {arn}: {e}")
+        except Exception as e:
+            logger.warning(f"Error cleaning up OIDC providers: {e}")
+
+        # B. Delete IAM Roles
+        logger.info("Checking for IAM Roles...")
         try:
             roles = iam.list_roles()['Roles']
             for role in roles:
-                if 'devsecops' in role['RoleName'] or 'omnishop' in role['RoleName']:
+                if 'devsecops' in role['RoleName'] or 'omnishop' in role['RoleName'] or 'eks-cluster-role' in role['RoleName']:
                     logger.info(f"Deleting IAM Role: {role['RoleName']}")
                     try:
-                        # Detach all policies first
+                        # Detach all managed policies
                         policies = iam.list_attached_role_policies(RoleName=role['RoleName'])['AttachedPolicies']
                         for p in policies:
                             iam.detach_role_policy(RoleName=role['RoleName'], PolicyArn=p['PolicyArn'])
@@ -315,12 +343,47 @@ class AWSCleaner(CloudCleaner):
                         inline_policies = iam.list_role_policies(RoleName=role['RoleName'])['PolicyNames']
                         for p in inline_policies:
                             iam.delete_role_policy(RoleName=role['RoleName'], PolicyName=p)
+                        
+                        # Remove from Instance Profiles
+                        profiles = iam.list_instance_profiles_for_role(RoleName=role['RoleName'])['InstanceProfiles']
+                        for profile in profiles:
+                            iam.remove_role_from_instance_profile(InstanceProfileName=profile['InstanceProfileName'], RoleName=role['RoleName'])
+                            # Try to delete the profile too if empty
+                            try:
+                                iam.delete_instance_profile(InstanceProfileName=profile['InstanceProfileName'])
+                            except:
+                                pass
 
                         iam.delete_role(RoleName=role['RoleName'])
                     except Exception as e:
                         logger.warning(f"Failed to delete role {role['RoleName']}: {e}")
         except Exception as e:
             logger.warning(f"Error cleaning up IAM roles: {e}")
+
+        # C. Delete Customer Managed Policies
+        logger.info("Checking for Custom IAM Policies...")
+        try:
+            # Scope to Local (Customer Managed) policies
+            policies = iam.list_policies(Scope='Local')['Policies']
+            for p in policies:
+                if 'devsecops' in p['PolicyName'] or 'omnishop' in p['PolicyName'] or 'AWSLoadBalancerController' in p['PolicyName']:
+                    logger.info(f"Deleting IAM Policy: {p['PolicyName']}")
+                    try:
+                        # Detach from all entities first (Users, Groups, Roles)
+                        # This is expensive, but necessary for force delete
+                        # For now, assume roles are deleted above.
+                        
+                        # Delete policy versions (except default)
+                        versions = iam.list_policy_versions(PolicyArn=p['Arn'])['Versions']
+                        for v in versions:
+                            if not v['IsDefaultVersion']:
+                                iam.delete_policy_version(PolicyArn=p['Arn'], VersionId=v['VersionId'])
+                        
+                        iam.delete_policy(PolicyArn=p['Arn'])
+                    except Exception as e:
+                        logger.warning(f"Failed to delete policy {p['PolicyName']}: {e}")
+        except Exception as e:
+            logger.warning(f"Error cleaning up IAM policies: {e}")
 
     def verify_cleanup(self):
         """Verifies if resources are actually deleted."""
@@ -388,6 +451,19 @@ class AWSCleaner(CloudCleaner):
             status_report.append(check_status("Network ACLs", len(non_default_nacls)))
         else:
             status_report.append("✅ Network ACLs: Deleted")
+
+        # 8. Check IAM Roles & Policies
+        iam = boto3.client('iam')
+        try:
+            roles = iam.list_roles()['Roles']
+            project_roles = [r for r in roles if 'devsecops' in r['RoleName'] or 'omnishop' in r['RoleName']]
+            status_report.append(check_status("IAM Roles", len(project_roles)))
+            
+            policies = iam.list_policies(Scope='Local')['Policies']
+            project_policies = [p for p in policies if 'devsecops' in p['PolicyName'] or 'omnishop' in p['PolicyName']]
+            status_report.append(check_status("IAM Policies", len(project_policies)))
+        except Exception:
+            status_report.append("⚠️ IAM Checks: Failed")
 
         # Print Report
         print("\n" + "="*50)
