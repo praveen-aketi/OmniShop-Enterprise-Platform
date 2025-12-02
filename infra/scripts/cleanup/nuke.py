@@ -39,11 +39,46 @@ class AWSCleaner(CloudCleaner):
         self.elbv2 = boto3.client('elbv2', region_name=region)
         self.s3 = boto3.resource('s3', region_name=region)
         self.dynamodb = boto3.client('dynamodb', region_name=region)
+        self.kms = boto3.client('kms', region_name=region)
 
     def _is_project_resource(self, name):
         """Helper to check if a resource name matches any project identifier."""
         if not name: return False
         return any(pid in name for pid in self.project_identifiers)
+
+    def cleanup_kms(self):
+        """Deletes KMS keys and aliases associated with the project."""
+        logger.info("Checking for KMS Keys and Aliases...")
+        try:
+            # List aliases
+            paginator = self.kms.get_paginator('list_aliases')
+            for page in paginator.paginate():
+                for alias in page['Aliases']:
+                    alias_name = alias.get('AliasName', '')
+                    # Check if alias matches project (e.g. alias/eks/devsecops-cluster)
+                    if self._is_project_resource(alias_name):
+                        logger.info(f"Deleting KMS Alias: {alias_name}")
+                        try:
+                            self.kms.delete_alias(AliasName=alias_name)
+                        except Exception as e:
+                            logger.warning(f"Failed to delete alias {alias_name}: {e}")
+                        
+                        # Optionally schedule key deletion if it's a target key (be careful here)
+                        # For EKS, the key is usually created by the module. 
+                        # If we delete the alias, we should probably schedule the key for deletion too 
+                        # to avoid leaving orphaned keys (cost money).
+                        if 'TargetKeyId' in alias:
+                            key_id = alias['TargetKeyId']
+                            try:
+                                key_info = self.kms.describe_key(KeyId=key_id)['KeyMetadata']
+                                if key_info['KeyState'] not in ['PendingDeletion', 'Unavailable']:
+                                    logger.info(f"Scheduling KMS Key deletion: {key_id}")
+                                    self.kms.schedule_key_deletion(KeyId=key_id, PendingWindowInDays=7)
+                            except Exception as e:
+                                logger.warning(f"Failed to schedule key deletion for {key_id}: {e}")
+
+        except Exception as e:
+            logger.warning(f"Error cleaning up KMS: {e}")
 
     def cleanup_load_balancers(self):
         """Deletes Classic and Application Load Balancers to free up VPCs."""
@@ -408,6 +443,9 @@ class AWSCleaner(CloudCleaner):
                         logger.warning(f"Failed to delete policy {p['PolicyName']}: {e}")
         except Exception as e:
             logger.warning(f"Error cleaning up IAM policies: {e}")
+
+        # 11. Delete KMS Keys/Aliases
+        self.cleanup_kms()
 
     def verify_cleanup(self):
         """Verifies if resources are actually deleted."""
