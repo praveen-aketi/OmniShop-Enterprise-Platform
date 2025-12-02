@@ -309,6 +309,32 @@ class AWSCleaner(CloudCleaner):
                 except Exception as e:
                     logger.warning(f"Failed to release EIP {eip['AllocationId']}: {e}")
 
+            # 4.5 Delete Network Interfaces (ENIs)
+            # This is critical for clearing SGs and Subnets
+            logger.info(f"Checking for Network Interfaces in VPC {vpc_id}...")
+            enis = self.ec2.describe_network_interfaces(Filters=[{'Name': 'vpc-id', 'Values': [vpc_id]}])['NetworkInterfaces']
+            for eni in enis:
+                eni_id = eni['NetworkInterfaceId']
+                logger.info(f"Processing ENI: {eni_id} ({eni['Description']})")
+                
+                # Detach if attached
+                if 'Attachment' in eni:
+                    attachment_id = eni['Attachment']['AttachmentId']
+                    logger.info(f"Detaching ENI {eni_id}...")
+                    try:
+                        self.ec2.detach_network_interface(AttachmentId=attachment_id, Force=True)
+                        # Wait for detach
+                        time.sleep(2) 
+                    except Exception as e:
+                        logger.warning(f"Failed to detach ENI {eni_id}: {e}")
+                
+                # Delete
+                try:
+                    self.ec2.delete_network_interface(NetworkInterfaceId=eni_id)
+                    logger.info(f"Deleted ENI {eni_id}")
+                except Exception as e:
+                    logger.warning(f"Failed to delete ENI {eni_id}: {e}")
+
             # 5. Delete Internet Gateways
             igws = self.ec2.describe_internet_gateways(Filters=[{'Name': 'attachment.vpc-id', 'Values': [vpc_id]}])['InternetGateways']
             for igw in igws:
