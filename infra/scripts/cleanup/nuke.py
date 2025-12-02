@@ -502,6 +502,22 @@ class AWSCleaner(CloudCleaner):
         print("    in the AWS Console for ~1 hour. This is normal.")
         print("="*50 + "\n")
 
+def get_tf_variable_default(tf_dir, var_name):
+    """Reads variables.tf to find the default value of a variable."""
+    var_file = os.path.join(tf_dir, "variables.tf")
+    try:
+        with open(var_file, 'r') as f:
+            content = f.read()
+            # Simple regex to find variable block and default value
+            # variable "cluster_name" { ... default = "value" ... }
+            import re
+            match = re.search(r'variable\s+"' + var_name + r'"\s*{[^}]*default\s*=\s*"([^"]+)"', content, re.DOTALL)
+            if match:
+                return match.group(1)
+    except Exception as e:
+        logger.warning(f"Could not read {var_name} from variables.tf: {e}")
+    return None
+
 def main():
     # Calculate absolute path to terraform dir relative to this script
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -514,19 +530,29 @@ def main():
     parser.add_argument("--state-bucket", help="Terraform State S3 Bucket Name (optional, will auto-discover if omitted)")
     parser.add_argument("--lock-table", default='omnishop-tf-lock', help="Terraform Lock DynamoDB Table")
     parser.add_argument("--force", action='store_true', help="Force delete resources without Terraform state")
-    parser.add_argument("--projects", help="Comma-separated list of project identifiers to target (e.g., 'omnishop,devsecops')")
+    parser.add_argument("--projects", help="Comma-separated list of project identifiers (optional, defaults to auto-detected names)")
     
     args = parser.parse_args()
     
-    if not args.projects:
-        print("⚠️  No project identifiers provided.")
-        user_input = input("Please enter project names to target (comma-separated, e.g., 'omnishop'): ")
-        if not user_input.strip():
-            print("❌ Error: Project identifiers are required to safely identify resources.")
-            sys.exit(1)
-        args.projects = user_input
-
-    project_identifiers = [p.strip() for p in args.projects.split(',')]
+    # 1. Start with 'omnishop' as the base project name
+    project_identifiers = ['omnishop']
+    
+    # 2. Auto-detect cluster name from Terraform config
+    detected_cluster_name = get_tf_variable_default(args.tf_dir, "cluster_name")
+    if detected_cluster_name:
+        print(f"🔍 Auto-detected cluster name from Terraform: '{detected_cluster_name}'")
+        if detected_cluster_name not in project_identifiers:
+            project_identifiers.append(detected_cluster_name)
+    
+    # 3. Add any user-provided projects
+    if args.projects:
+        user_projects = [p.strip() for p in args.projects.split(',')]
+        project_identifiers.extend(user_projects)
+        
+    # Remove duplicates
+    project_identifiers = list(set(project_identifiers))
+    
+    print(f"🎯 Targeting resources matching: {project_identifiers}")
 
     # Auto-discover state bucket if not provided
     if not args.state_bucket and not args.force:
