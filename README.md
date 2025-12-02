@@ -531,273 +531,48 @@ aws dynamodb delete-item \
 
 ### ⚠️ Important: Avoid AWS Charges
 
-After practicing with this project, it's **critical** to destroy all resources to avoid ongoing AWS charges. Follow these steps carefully in the exact order listed.
+After practicing with this project, it's **critical** to destroy all resources to avoid ongoing AWS charges. We have provided an automated script to handle this process safely and completely.
 
----
+### Automated Cleanup Script
 
-### Step 1: Configure kubectl Access
+The script `infra/scripts/cleanup/nuke.py` automates the following:
+1.  **Deletes Kubernetes Load Balancers**: Removes ELBs/ALBs that often block VPC deletion.
+2.  **Runs Terraform Destroy**: Destroys the EKS cluster, VPC, and other infrastructure.
+3.  **Cleans State Storage**: Deletes the Terraform state S3 bucket and DynamoDB lock table.
 
-Before destroying resources, ensure you have access to your EKS cluster:
+#### Usage
 
-```bash
-# Update kubeconfig
-aws eks update-kubeconfig \
-  --region us-east-1 \
-  --name omnishop-eks-cluster
+1.  **Install Dependencies**:
+    ```bash
+    pip install boto3
+    ```
 
-# Verify connection
-kubectl get nodes
-```
+2.  **Run the Script**:
+    ```bash
+    python infra/scripts/cleanup/nuke.py \
+      --state-bucket omnishop-tf-state-<your-unique-id> \
+      --region us-east-1
+    ```
 
----
+    *Replace `<your-unique-id>` with your actual bucket name.*
 
-### Step 2: Delete ArgoCD Applications
+3.  **Confirm**: Type `yes` when prompted to proceed.
 
-Delete all applications managed by ArgoCD to trigger cleanup of Kubernetes resources:
+### Manual Verification
 
-```bash
-# Delete all OmniShop applications
-kubectl delete applications --all -n argocd
-
-# Verify deletion
-kubectl get applications -n argocd
-```
-
-**Expected Output:** `No resources found in argocd namespace.`
-
----
-
-### Step 3: Delete Monitoring Stack
-
-Remove the Prometheus and Grafana monitoring stack:
+After running the script, you can verify that everything is gone:
 
 ```bash
-# Delete monitoring application
-kubectl delete application kube-prometheus-stack -n argocd
-
-# Or delete the namespace directly
-kubectl delete namespace monitoring
-
-# Wait for resources to be deleted (2-3 minutes)
-kubectl get namespace monitoring
-```
-
----
-
-### Step 4: Delete All LoadBalancers
-
-**Critical Step:** Terraform cannot delete the VPC if LoadBalancers still exist. You must delete them manually.
-
-```bash
-# Check for any remaining LoadBalancer services
-kubectl get svc --all-namespaces | grep LoadBalancer
-
-# Delete services with LoadBalancer type
-kubectl delete svc <service-name> -n <namespace>
-
-# Verify all LoadBalancers are deleted
-kubectl get svc --all-namespaces | grep LoadBalancer
-```
-
-**Alternative: Delete via AWS CLI**
-
-```bash
-# List all load balancers in your region
-aws elbv2 describe-load-balancers \
-  --region us-east-1 \
-  --query 'LoadBalancers[*].[LoadBalancerName,LoadBalancerArn]' \
-  --output table
-
-# Delete each load balancer (repeat for all)
-aws elbv2 delete-load-balancer \
-  --load-balancer-arn <load-balancer-arn> \
-  --region us-east-1
-
-# Wait 2-3 minutes for deletion to complete
-```
-
----
-
-### Step 5: Delete Target Groups
-
-LoadBalancers create target groups that must also be deleted:
-
-```bash
-# List all target groups
-aws elbv2 describe-target-groups \
-  --region us-east-1 \
-  --query 'TargetGroups[*].[TargetGroupName,TargetGroupArn]' \
-  --output table
-
-# Delete each target group
-aws elbv2 delete-target-group \
-  --target-group-arn <target-group-arn> \
-  --region us-east-1
-```
-
----
-
-### Step 6: Run Terraform Destroy
-
-Now you can safely destroy the infrastructure:
-
-```bash
-# Navigate to Terraform directory
-cd infra/terraform
-
-# Initialize Terraform (if not already done)
-terraform init \
-  -backend-config="bucket=omnishop-tf-state-<your-unique-id>" \
-  -backend-config="key=terraform.tfstate" \
-  -backend-config="region=us-east-1" \
-  -backend-config="dynamodb_table=omnishop-tf-lock"
-
-# Review what will be destroyed
-terraform plan -destroy -var="aws_region=us-east-1"
-
-# Destroy all infrastructure
-terraform destroy -var="aws_region=us-east-1" -auto-approve
-```
-
-**Expected Duration:** 10-15 minutes
-
----
-
-### Step 7: Troubleshoot Terraform Destroy Failures
-
-If `terraform destroy` fails, follow these troubleshooting steps:
-
-#### Issue: Security Groups Cannot Be Deleted
-
-**Error:** `DependencyViolation: resource has a dependent object`
-
-**Solution:**
-```bash
-# List security groups in your VPC
-aws ec2 describe-security-groups \
-  --region us-east-1 \
-  --filters "Name=vpc-id,Values=<your-vpc-id>" \
-  --query 'SecurityGroups[*].[GroupId,GroupName]' \
-  --output table
-
-# Delete security groups manually (except default)
-aws ec2 delete-security-group \
-  --group-id <security-group-id> \
-  --region us-east-1
-
-# Retry terraform destroy
-terraform destroy -var="aws_region=us-east-1" -auto-approve
-```
-
-#### Issue: Network Interfaces Still Attached
-
-**Error:** `Network interface is currently in use`
-
-**Solution:**
-```bash
-# List network interfaces
-aws ec2 describe-network-interfaces \
-  --region us-east-1 \
-  --filters "Name=vpc-id,Values=<your-vpc-id>" \
-  --query 'NetworkInterfaces[*].[NetworkInterfaceId,Status]' \
-  --output table
-
-# Delete network interfaces
-aws ec2 delete-network-interface \
-  --network-interface-id <eni-id> \
-  --region us-east-1
-```
-
-#### Issue: NAT Gateways Not Deleted
-
-**Solution:**
-```bash
-# List NAT gateways
-aws ec2 describe-nat-gateways \
-  --region us-east-1 \
-  --filter "Name=vpc-id,Values=<your-vpc-id>"
-
-# Delete NAT gateways
-aws ec2 delete-nat-gateway \
-  --nat-gateway-id <nat-gateway-id> \
-  --region us-east-1
-
-# Wait 5 minutes for deletion, then retry terraform destroy
-```
-
----
-
-### Step 8: Clean Up Terraform State Files
-
-After successful infrastructure destruction, clean up Terraform state:
-
-```bash
-# Empty the S3 bucket
-aws s3 rm s3://omnishop-tf-state-<your-unique-id> --recursive --region us-east-1
-
-# Delete the S3 bucket
-aws s3 rb s3://omnishop-tf-state-<your-unique-id> --region us-east-1
-
-# Delete DynamoDB lock table
-aws dynamodb delete-table \
-  --table-name omnishop-tf-lock \
-  --region us-east-1
-```
-
----
-
-### Step 9: Delete IAM Roles (Optional)
-
-If you created IAM roles for this project, delete them:
-
-```bash
-# List IAM roles
-aws iam list-roles \
-  --query 'Roles[?contains(RoleName, `GitHubActions`) || contains(RoleName, `omnishop`)].RoleName' \
-  --output table
-
-# Detach policies from role
-aws iam list-attached-role-policies \
-  --role-name GitHubActionsRole
-
-aws iam detach-role-policy \
-  --role-name GitHubActionsRole \
-  --policy-arn <policy-arn>
-
-# Delete the role
-aws iam delete-role --role-name GitHubActionsRole
-```
-
----
-
-### Step 10: Verify Complete Cleanup
-
-Ensure all resources are deleted to avoid charges:
-
-```bash
-# Check for EC2 instances
-aws ec2 describe-instances \
-  --region us-east-1 \
-  --filters "Name=instance-state-name,Values=running" \
-  --query 'Reservations[*].Instances[*].[InstanceId,Tags[?Key==`Name`].Value|[0]]' \
-  --output table
-
-# Check for EKS clusters
+# Check for remaining EKS clusters
 aws eks list-clusters --region us-east-1
 
-# Check for VPCs (should only see default VPC)
-aws ec2 describe-vpcs \
-  --region us-east-1 \
-  --query 'Vpcs[*].[VpcId,Tags[?Key==`Name`].Value|[0],IsDefault]' \
-  --output table
+# Check for remaining VPCs (should only see default)
+aws ec2 describe-vpcs --region us-east-1 --query "Vpcs[?IsDefault==\`false\`]"
 
-# Check for load balancers
-aws elbv2 describe-load-balancers \
-  --region us-east-1 \
-  --query 'LoadBalancers[*].LoadBalancerName' \
-  --output table
-
-# Check for S3 buckets
+# Check for Load Balancers
+aws elb describe-load-balancers --region us-east-1
+aws elbv2 describe-load-balancers --region us-east-1
+```
 aws s3 ls | grep omnishop
 
 # Check for DynamoDB tables
