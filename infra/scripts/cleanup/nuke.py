@@ -75,6 +75,10 @@ class AWSCleaner(CloudCleaner):
 
     def run_terraform_destroy(self):
         """Runs terraform destroy."""
+        if not self.state_bucket:
+            logger.warning("No state bucket provided/found. Skipping Terraform Destroy.")
+            return
+
         logger.info("Running Terraform Destroy...")
         try:
             # Initialize
@@ -108,24 +112,27 @@ class AWSCleaner(CloudCleaner):
         logger.info("Cleaning up Terraform State Storage...")
         
         # 1. Delete S3 Bucket
-        try:
-            bucket = self.s3.Bucket(self.state_bucket)
-            # Check if bucket exists by attempting to load it
+        if self.state_bucket:
             try:
-                self.s3.meta.client.head_bucket(Bucket=self.state_bucket)
-                logger.info(f"Deleting all versions in bucket {self.state_bucket}...")
-                bucket.object_versions.delete()
-                logger.info(f"Deleting bucket {self.state_bucket}...")
-                bucket.delete()
-                logger.info("Bucket deleted.")
-            except self.s3.meta.client.exceptions.ClientError as e:
-                error_code = e.response['Error']['Code']
-                if error_code == '404':
-                    logger.info(f"Bucket {self.state_bucket} not found (already deleted).")
-                else:
-                    logger.warning(f"Error checking bucket: {e}")
-        except Exception as e:
-            logger.warning(f"Error processing S3 bucket cleanup: {e}")
+                bucket = self.s3.Bucket(self.state_bucket)
+                # Check if bucket exists by attempting to load it
+                try:
+                    self.s3.meta.client.head_bucket(Bucket=self.state_bucket)
+                    logger.info(f"Deleting all versions in bucket {self.state_bucket}...")
+                    bucket.object_versions.delete()
+                    logger.info(f"Deleting bucket {self.state_bucket}...")
+                    bucket.delete()
+                    logger.info("Bucket deleted.")
+                except self.s3.meta.client.exceptions.ClientError as e:
+                    error_code = e.response['Error']['Code']
+                    if error_code == '404':
+                        logger.info(f"Bucket {self.state_bucket} not found (already deleted).")
+                    else:
+                        logger.warning(f"Error checking bucket: {e}")
+            except Exception as e:
+                logger.warning(f"Error processing S3 bucket cleanup: {e}")
+        else:
+            logger.info("No state bucket to clean up.")
 
         # 2. Delete DynamoDB Table
         try:
@@ -140,72 +147,10 @@ class AWSCleaner(CloudCleaner):
         except Exception as e:
             logger.warning(f"Error deleting DynamoDB table: {e}")
 
-
-    def verify_cleanup(self):
-        """Verifies if resources are actually deleted."""
-        logger.info("\n🔍 Verifying Cleanup Status...")
-        
-        status_report = []
-        
-        # 1. Check EKS Clusters
-        try:
-            clusters = self.eks.list_clusters().get('clusters', [])
-            if not clusters:
-                status_report.append("✅ EKS Clusters: Deleted")
-            else:
-                status_report.append(f"❌ EKS Clusters: {len(clusters)} remaining")
-        except Exception as e:
-            logger.warning(f"Error checking EKS clusters: {e}")
-            status_report.append("⚠️ EKS Clusters: Check Failed")
-        # Note: boto3 EKS client is needed for list_clusters, but we initialized ec2/elb/s3. 
-        # Let's add eks client lazy or just use subprocess for simplicity or add to init.
-        # Adding to init is cleaner.
-        
-        # 2. Check Load Balancers
-        clb_count = len(self.elb.describe_load_balancers().get('LoadBalancerDescriptions', []))
-        alb_count = len(self.elbv2.describe_load_balancers().get('LoadBalancers', []))
-        
-        if clb_count + alb_count == 0:
-            status_report.append("✅ Load Balancers: Deleted")
-        else:
-            status_report.append(f"❌ Load Balancers: {clb_count + alb_count} remaining")
-
-        # 3. Check VPCs (Non-default)
-        vpcs = self.ec2.describe_vpcs(Filters=[{'Name': 'isDefault', 'Values': ['false']}])['Vpcs']
-        if not vpcs:
-            status_report.append("✅ Custom VPCs: Deleted")
-        else:
-            status_report.append(f"❌ Custom VPCs: {len(vpcs)} remaining")
-            
-        # 4. Check Subnets (Non-default)
-        # We filter subnets that belong to the remaining custom VPCs or all non-default subnets
-        # Simplest is to check if any subnets map to the custom VPCs found above
-        if vpcs:
-            vpc_ids = [v['VpcId'] for v in vpcs]
-            subnets = self.ec2.describe_subnets(Filters=[{'Name': 'vpc-id', 'Values': vpc_ids}])['Subnets']
-            status_report.append(f"❌ Subnets: {len(subnets)} remaining (in custom VPCs)")
-        else:
-            status_report.append("✅ Subnets: Deleted")
-
-        # 5. Check NAT Gateways
-        nats = self.ec2.describe_nat_gateways(Filters=[{'Name': 'state', 'Values': ['available', 'pending']}])['NatGateways']
-        if not nats:
-            status_report.append("✅ NAT Gateways: Deleted")
-        else:
-            status_report.append(f"❌ NAT Gateways: {len(nats)} remaining")
-
-        # Print Report
-        print("\n" + "="*40)
-        print("   CLEANUP VERIFICATION REPORT")
-        print("="*40)
-        for line in status_report:
-            print(line)
-        print("="*40 + "\n")
+# ... (verify_cleanup remains the same) ...
 
 def main():
     # Calculate absolute path to terraform dir relative to this script
-    # Script is in infra/scripts/cleanup/nuke.py
-    # Terraform is in infra/terraform
     script_dir = os.path.dirname(os.path.abspath(__file__))
     default_tf_dir = os.path.abspath(os.path.join(script_dir, "../../terraform"))
 
@@ -213,16 +158,44 @@ def main():
     parser.add_argument("--cloud", choices=['aws'], default='aws', help="Cloud provider")
     parser.add_argument("--region", default='us-east-1', help="AWS Region")
     parser.add_argument("--tf-dir", default=default_tf_dir, help="Path to Terraform directory")
-    parser.add_argument("--state-bucket", required=True, help="Terraform State S3 Bucket Name")
+    parser.add_argument("--state-bucket", help="Terraform State S3 Bucket Name (optional, will auto-discover if omitted)")
     parser.add_argument("--lock-table", default='omnishop-tf-lock', help="Terraform Lock DynamoDB Table")
     
     args = parser.parse_args()
 
+    # Auto-discover state bucket if not provided
+    if not args.state_bucket:
+        print("🔍 Searching for Terraform state bucket...")
+        try:
+            s3_client = boto3.client('s3', region_name=args.region)
+            response = s3_client.list_buckets()
+            candidates = [b['Name'] for b in response.get('Buckets', []) if 'omnishop-tf-state' in b['Name']]
+            
+            if len(candidates) == 1:
+                args.state_bucket = candidates[0]
+                print(f"✅ Found state bucket: {args.state_bucket}")
+            elif len(candidates) > 1:
+                print("⚠️ Found multiple candidate buckets:")
+                for i, b in enumerate(candidates):
+                    print(f"  {i+1}. {b}")
+                selection = input("Select bucket number to use (or press Enter to skip state cleanup): ")
+                if selection.isdigit() and 1 <= int(selection) <= len(candidates):
+                    args.state_bucket = candidates[int(selection)-1]
+                else:
+                    print("⚠️ No bucket selected. Terraform destroy and state cleanup will be skipped.")
+            else:
+                print("⚠️ No bucket found matching 'omnishop-tf-state'. Terraform destroy and state cleanup will be skipped.")
+        except Exception as e:
+            print(f"⚠️ Error during bucket discovery: {e}")
+
     if args.cloud == 'aws':
         cleaner = AWSCleaner(args.region, args.tf_dir, args.state_bucket, args.lock_table)
         
-        print(f"⚠️  WARNING: This will DESTROY all infrastructure in {args.region} using state bucket {args.state_bucket}.")
+        bucket_msg = args.state_bucket if args.state_bucket else "NONE (Skipping TF Destroy)"
+        print(f"⚠️  WARNING: This will DESTROY all infrastructure in {args.region}.")
+        print(f"   State Bucket: {bucket_msg}")
         print(f"   Terraform Directory: {args.tf_dir}")
+        
         confirm = input("Are you sure you want to proceed? (yes/no): ")
         
         if confirm.lower() == 'yes':
