@@ -33,6 +33,7 @@ class AWSCleaner(CloudCleaner):
         self.state_bucket = state_bucket
         self.lock_table = lock_table
         self.ec2 = boto3.client('ec2', region_name=region)
+        self.eks = boto3.client('eks', region_name=region)
         self.elb = boto3.client('elb', region_name=region)
         self.elbv2 = boto3.client('elbv2', region_name=region)
         self.s3 = boto3.resource('s3', region_name=region)
@@ -140,7 +141,6 @@ class AWSCleaner(CloudCleaner):
             logger.warning(f"Error deleting DynamoDB table: {e}")
 
 
-
     def verify_cleanup(self):
         """Verifies if resources are actually deleted."""
         logger.info("\n🔍 Verifying Cleanup Status...")
@@ -148,7 +148,15 @@ class AWSCleaner(CloudCleaner):
         status_report = []
         
         # 1. Check EKS Clusters
-        clusters = self.ec2.meta.client.get_paginator('list_clusters').paginate().build_full_result().get('clusters', [])
+        try:
+            clusters = self.eks.list_clusters().get('clusters', [])
+            if not clusters:
+                status_report.append("✅ EKS Clusters: Deleted")
+            else:
+                status_report.append(f"❌ EKS Clusters: {len(clusters)} remaining")
+        except Exception as e:
+            logger.warning(f"Error checking EKS clusters: {e}")
+            status_report.append("⚠️ EKS Clusters: Check Failed")
         # Note: boto3 EKS client is needed for list_clusters, but we initialized ec2/elb/s3. 
         # Let's add eks client lazy or just use subprocess for simplicity or add to init.
         # Adding to init is cleaner.
