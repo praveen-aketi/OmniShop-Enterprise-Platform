@@ -5,9 +5,9 @@
 */
 
 terraform {
-  backend "s3" {
-    key     = "devsecops/terraform.tfstate"
-    encrypt = true
-    # bucket, region, and dynamodb_table will be passed via -backend-config
-  }
+# backend "s3" {
+  #   key     = "devsecops/terraform.tfstate"
+  #   encrypt = true
+  #   # bucket, region, and dynamodb_table will be passed via -backend-config
+  # }
 }
