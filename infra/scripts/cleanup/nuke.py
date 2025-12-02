@@ -151,6 +151,37 @@ class AWSCleaner(CloudCleaner):
         """Force deletes infrastructure when Terraform state is missing."""
         logger.info("⚠️  STARTING FORCE DELETE: Scanning for lingering resources...")
         
+        # 0. Delete EKS Clusters
+        logger.info("Checking for EKS Clusters...")
+        try:
+            clusters = self.eks.list_clusters().get('clusters', [])
+            for cluster_name in clusters:
+                if 'devsecops' in cluster_name or 'omnishop' in cluster_name:
+                    logger.info(f"Deleting EKS Cluster: {cluster_name}")
+                    try:
+                        self.eks.delete_cluster(name=cluster_name)
+                        # Wait for deletion
+                        logger.info(f"Waiting for cluster {cluster_name} to delete (this takes time)...")
+                        waiter = self.eks.get_waiter('cluster_deleted')
+                        waiter.wait(name=cluster_name)
+                        logger.info(f"Cluster {cluster_name} deleted.")
+                    except Exception as e:
+                        logger.error(f"Failed to delete cluster {cluster_name}: {e}")
+        except Exception as e:
+            logger.warning(f"Error checking/deleting EKS clusters: {e}")
+
+        # 1. Delete CloudWatch Log Groups
+        logger.info("Checking for CloudWatch Log Groups...")
+        try:
+            logs = boto3.client('logs', region_name=self.region)
+            log_groups = logs.describe_log_groups(logGroupNamePrefix='/aws/eks/')['logGroups']
+            for lg in log_groups:
+                if 'devsecops' in lg['logGroupName'] or 'omnishop' in lg['logGroupName']:
+                    logger.info(f"Deleting Log Group: {lg['logGroupName']}")
+                    logs.delete_log_group(logGroupName=lg['logGroupName'])
+        except Exception as e:
+            logger.warning(f"Error deleting log groups: {e}")
+
         # Find VPCs matching project tags
         vpcs = self.ec2.describe_vpcs(Filters=[
             {'Name': 'tag:Name', 'Values': ['*devsecops*', '*omnishop*', '*eks*']}
@@ -158,13 +189,12 @@ class AWSCleaner(CloudCleaner):
         
         if not vpcs:
             logger.info("No project VPCs found for force deletion.")
-            return
-
+        
         for vpc in vpcs:
             vpc_id = vpc['VpcId']
             logger.info(f"💣 Nuke target acquired: VPC {vpc_id}")
             
-            # 0. Terminate EC2 Instances
+            # 2. Terminate EC2 Instances
             instances = self.ec2.describe_instances(Filters=[
                 {'Name': 'vpc-id', 'Values': [vpc_id]},
                 {'Name': 'instance-state-name', 'Values': ['running', 'stopped', 'stopping', 'pending']}
@@ -180,7 +210,7 @@ class AWSCleaner(CloudCleaner):
                 waiter.wait(InstanceIds=instance_ids)
                 logger.info("Instances terminated.")
 
-            # 1. Delete NAT Gateways
+            # 3. Delete NAT Gateways
             nats = self.ec2.describe_nat_gateways(Filters=[{'Name': 'vpc-id', 'Values': [vpc_id]}])['NatGateways']
             for nat in nats:
                 if nat['State'] != 'deleted':
@@ -199,14 +229,24 @@ class AWSCleaner(CloudCleaner):
                         break
                     time.sleep(5)
 
-            # 2. Delete Internet Gateways
+            # 4. Release Elastic IPs
+            # Note: EIPs are often associated with NAT Gateways, so release them after NAT deletion
+            eips = self.ec2.describe_addresses(Filters=[{'Name': 'tag:Name', 'Values': ['*devsecops*', '*omnishop*']}])['Addresses']
+            for eip in eips:
+                logger.info(f"Releasing Elastic IP: {eip['AllocationId']}")
+                try:
+                    self.ec2.release_address(AllocationId=eip['AllocationId'])
+                except Exception as e:
+                    logger.warning(f"Failed to release EIP {eip['AllocationId']}: {e}")
+
+            # 5. Delete Internet Gateways
             igws = self.ec2.describe_internet_gateways(Filters=[{'Name': 'attachment.vpc-id', 'Values': [vpc_id]}])['InternetGateways']
             for igw in igws:
                 logger.info(f"Detaching and Deleting IGW: {igw['InternetGatewayId']}")
                 self.ec2.detach_internet_gateway(InternetGatewayId=igw['InternetGatewayId'], VpcId=vpc_id)
                 self.ec2.delete_internet_gateway(InternetGatewayId=igw['InternetGatewayId'])
 
-            # 3. Delete Subnets
+            # 6. Delete Subnets
             subnets = self.ec2.describe_subnets(Filters=[{'Name': 'vpc-id', 'Values': [vpc_id]}])['Subnets']
             for subnet in subnets:
                 logger.info(f"Deleting Subnet: {subnet['SubnetId']}")
@@ -215,7 +255,7 @@ class AWSCleaner(CloudCleaner):
                 except Exception as e:
                     logger.warning(f"Failed to delete subnet {subnet['SubnetId']}: {e}")
 
-            # 4. Delete Route Tables (except main)
+            # 7. Delete Route Tables (except main)
             rts = self.ec2.describe_route_tables(Filters=[{'Name': 'vpc-id', 'Values': [vpc_id]}])['RouteTables']
             for rt in rts:
                 if not any(assoc['Main'] for assoc in rt['Associations']):
@@ -225,7 +265,8 @@ class AWSCleaner(CloudCleaner):
                     except Exception as e:
                         logger.warning(f"Failed to delete RT {rt['RouteTableId']}: {e}")
 
-            # 5. Delete Security Groups
+            # 8. Delete Security Groups
+            # We need to revoke all rules first to break cyclic dependencies
             sgs = self.ec2.describe_security_groups(Filters=[{'Name': 'vpc-id', 'Values': [vpc_id]}])['SecurityGroups']
             for sg in sgs:
                 if sg['GroupName'] == 'default': continue
@@ -238,8 +279,7 @@ class AWSCleaner(CloudCleaner):
                 except Exception as e:
                     logger.warning(f"Error revoking rules for {sg['GroupId']}: {e}")
             
-            # Wait a moment for rule revocation
-            time.sleep(2)
+            time.sleep(5) # Wait for revocation
             
             for sg in sgs:
                 if sg['GroupName'] == 'default': continue
@@ -249,13 +289,38 @@ class AWSCleaner(CloudCleaner):
                 except Exception as e:
                     logger.warning(f"Failed to delete SG {sg['GroupId']}: {e}")
 
-            # 6. Delete VPC
+            # 9. Delete VPC
             logger.info(f"Deleting VPC: {vpc_id}")
             try:
                 self.ec2.delete_vpc(VpcId=vpc_id)
                 logger.info("VPC Deleted.")
             except Exception as e:
                 logger.error(f"Failed to delete VPC {vpc_id}: {e}")
+
+        # 10. Delete IAM Roles
+        # This is outside the VPC loop as roles are global
+        iam = boto3.client('iam')
+        try:
+            roles = iam.list_roles()['Roles']
+            for role in roles:
+                if 'devsecops' in role['RoleName'] or 'omnishop' in role['RoleName']:
+                    logger.info(f"Deleting IAM Role: {role['RoleName']}")
+                    try:
+                        # Detach all policies first
+                        policies = iam.list_attached_role_policies(RoleName=role['RoleName'])['AttachedPolicies']
+                        for p in policies:
+                            iam.detach_role_policy(RoleName=role['RoleName'], PolicyArn=p['PolicyArn'])
+                        
+                        # Delete inline policies
+                        inline_policies = iam.list_role_policies(RoleName=role['RoleName'])['PolicyNames']
+                        for p in inline_policies:
+                            iam.delete_role_policy(RoleName=role['RoleName'], PolicyName=p)
+
+                        iam.delete_role(RoleName=role['RoleName'])
+                    except Exception as e:
+                        logger.warning(f"Failed to delete role {role['RoleName']}: {e}")
+        except Exception as e:
+            logger.warning(f"Error cleaning up IAM roles: {e}")
 
     def verify_cleanup(self):
         """Verifies if resources are actually deleted."""
