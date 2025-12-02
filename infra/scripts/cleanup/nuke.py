@@ -328,55 +328,77 @@ class AWSCleaner(CloudCleaner):
         
         status_report = []
         
+        def check_status(resource_name, count, is_deleting=False):
+            if count == 0:
+                return f"✅ {resource_name}: Deleted"
+            elif is_deleting:
+                return f"⏳ {resource_name}: {count} Deleting (in progress)"
+            else:
+                return f"❌ {resource_name}: {count} Remaining (Action Required)"
+
         # 1. Check EKS Clusters
         try:
             clusters = self.eks.list_clusters().get('clusters', [])
-            if not clusters:
-                status_report.append("✅ EKS Clusters: Deleted")
-            else:
-                status_report.append(f"❌ EKS Clusters: {len(clusters)} remaining")
+            status_report.append(check_status("EKS Clusters", len(clusters)))
         except Exception as e:
-            logger.warning(f"Error checking EKS clusters: {e}")
             status_report.append("⚠️ EKS Clusters: Check Failed")
         
         # 2. Check Load Balancers
-        clb_count = len(self.elb.describe_load_balancers().get('LoadBalancerDescriptions', []))
-        alb_count = len(self.elbv2.describe_load_balancers().get('LoadBalancers', []))
-        
-        if clb_count + alb_count == 0:
-            status_report.append("✅ Load Balancers: Deleted")
-        else:
-            status_report.append(f"❌ Load Balancers: {clb_count + alb_count} remaining")
+        clb = self.elb.describe_load_balancers().get('LoadBalancerDescriptions', [])
+        alb = self.elbv2.describe_load_balancers().get('LoadBalancers', [])
+        status_report.append(check_status("Load Balancers", len(clb) + len(alb)))
 
-        # 3. Check VPCs (Non-default)
-        vpcs = self.ec2.describe_vpcs(Filters=[{'Name': 'isDefault', 'Values': ['false']}])['Vpcs']
-        if not vpcs:
-            status_report.append("✅ Custom VPCs: Deleted")
+        # 3. Check NAT Gateways (Filter for non-deleted)
+        nats_active = self.ec2.describe_nat_gateways(Filters=[{'Name': 'state', 'Values': ['available', 'pending']}])['NatGateways']
+        nats_deleting = self.ec2.describe_nat_gateways(Filters=[{'Name': 'state', 'Values': ['deleting']}])['NatGateways']
+        
+        if nats_active:
+            status_report.append(f"❌ NAT Gateways: {len(nats_active)} Active")
+        elif nats_deleting:
+            status_report.append(f"⏳ NAT Gateways: {len(nats_deleting)} Deleting...")
         else:
-            status_report.append(f"❌ Custom VPCs: {len(vpcs)} remaining")
+            status_report.append("✅ NAT Gateways: Deleted")
+
+        # 4. Check VPCs
+        vpcs = self.ec2.describe_vpcs(Filters=[{'Name': 'isDefault', 'Values': ['false']}])['Vpcs']
+        status_report.append(check_status("Custom VPCs", len(vpcs)))
             
-        # 4. Check Subnets (Non-default)
+        # 5. Check Subnets
         if vpcs:
             vpc_ids = [v['VpcId'] for v in vpcs]
             subnets = self.ec2.describe_subnets(Filters=[{'Name': 'vpc-id', 'Values': vpc_ids}])['Subnets']
-            status_report.append(f"❌ Subnets: {len(subnets)} remaining (in custom VPCs)")
+            status_report.append(check_status("Subnets", len(subnets)))
         else:
             status_report.append("✅ Subnets: Deleted")
 
-        # 5. Check NAT Gateways
-        nats = self.ec2.describe_nat_gateways(Filters=[{'Name': 'state', 'Values': ['available', 'pending']}])['NatGateways']
-        if not nats:
-            status_report.append("✅ NAT Gateways: Deleted")
+        # 6. Check Security Groups (non-default)
+        if vpcs:
+            vpc_ids = [v['VpcId'] for v in vpcs]
+            sgs = self.ec2.describe_security_groups(Filters=[{'Name': 'vpc-id', 'Values': vpc_ids}])['SecurityGroups']
+            non_default_sgs = [sg for sg in sgs if sg['GroupName'] != 'default']
+            status_report.append(check_status("Security Groups", len(non_default_sgs)))
         else:
-            status_report.append(f"❌ NAT Gateways: {len(nats)} remaining")
+            status_report.append("✅ Security Groups: Deleted")
+
+        # 7. Check Network ACLs (non-default)
+        if vpcs:
+            vpc_ids = [v['VpcId'] for v in vpcs]
+            nacls = self.ec2.describe_network_acls(Filters=[{'Name': 'vpc-id', 'Values': vpc_ids}])['NetworkAcls']
+            non_default_nacls = [n for n in nacls if not n['IsDefault']]
+            status_report.append(check_status("Network ACLs", len(non_default_nacls)))
+        else:
+            status_report.append("✅ Network ACLs: Deleted")
 
         # Print Report
-        print("\n" + "="*40)
+        print("\n" + "="*50)
         print("   CLEANUP VERIFICATION REPORT")
-        print("="*40)
+        print("="*50)
         for line in status_report:
             print(line)
-        print("="*40 + "\n")
+        print("="*50)
+        print("ℹ️  NOTE: Resources in 'Deleted' state may remain visible")
+        print("    in the AWS Console for ~1 hour. This is normal.")
+        print("="*50 + "\n")
 
 def main():
     # Calculate absolute path to terraform dir relative to this script
