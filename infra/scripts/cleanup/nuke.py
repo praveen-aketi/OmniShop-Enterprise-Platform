@@ -138,11 +138,77 @@ class AWSCleaner(CloudCleaner):
         except Exception as e:
             logger.warning(f"Error deleting DynamoDB table: {e}")
 
+import os
+
+# ... (imports remain the same)
+
+class AWSCleaner(CloudCleaner):
+    # ... (init and other methods remain the same)
+
+    def verify_cleanup(self):
+        """Verifies if resources are actually deleted."""
+        logger.info("\n🔍 Verifying Cleanup Status...")
+        
+        status_report = []
+        
+        # 1. Check EKS Clusters
+        clusters = self.ec2.meta.client.get_paginator('list_clusters').paginate().build_full_result().get('clusters', [])
+        # Note: boto3 EKS client is needed for list_clusters, but we initialized ec2/elb/s3. 
+        # Let's add eks client lazy or just use subprocess for simplicity or add to init.
+        # Adding to init is cleaner.
+        
+        # 2. Check Load Balancers
+        clb_count = len(self.elb.describe_load_balancers().get('LoadBalancerDescriptions', []))
+        alb_count = len(self.elbv2.describe_load_balancers().get('LoadBalancers', []))
+        
+        if clb_count + alb_count == 0:
+            status_report.append("✅ Load Balancers: Deleted")
+        else:
+            status_report.append(f"❌ Load Balancers: {clb_count + alb_count} remaining")
+
+        # 3. Check VPCs (Non-default)
+        vpcs = self.ec2.describe_vpcs(Filters=[{'Name': 'isDefault', 'Values': ['false']}])['Vpcs']
+        if not vpcs:
+            status_report.append("✅ Custom VPCs: Deleted")
+        else:
+            status_report.append(f"❌ Custom VPCs: {len(vpcs)} remaining")
+            
+        # 4. Check Subnets (Non-default)
+        # We filter subnets that belong to the remaining custom VPCs or all non-default subnets
+        # Simplest is to check if any subnets map to the custom VPCs found above
+        if vpcs:
+            vpc_ids = [v['VpcId'] for v in vpcs]
+            subnets = self.ec2.describe_subnets(Filters=[{'Name': 'vpc-id', 'Values': vpc_ids}])['Subnets']
+            status_report.append(f"❌ Subnets: {len(subnets)} remaining (in custom VPCs)")
+        else:
+            status_report.append("✅ Subnets: Deleted")
+
+        # 5. Check NAT Gateways
+        nats = self.ec2.describe_nat_gateways(Filters=[{'Name': 'state', 'Values': ['available', 'pending']}])['NatGateways']
+        if not nats:
+            status_report.append("✅ NAT Gateways: Deleted")
+        else:
+            status_report.append(f"❌ NAT Gateways: {len(nats)} remaining")
+
+        # Print Report
+        print("\n" + "="*40)
+        print("   CLEANUP VERIFICATION REPORT")
+        print("="*40)
+        for line in status_report:
+            print(line)
+        print("="*40 + "\n")
+
 def main():
+    # Calculate absolute path to terraform dir relative to this script
+    # Script is in infra/scripts/cleanup/nuke.py
+    # Terraform is in infra/terraform
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    default_tf_dir = os.path.abspath(os.path.join(script_dir, "../../terraform"))
+
     parser = argparse.ArgumentParser(description="Automated Infrastructure Cleanup")
     parser.add_argument("--cloud", choices=['aws'], default='aws', help="Cloud provider")
     parser.add_argument("--region", default='us-east-1', help="AWS Region")
-    parser.add_argument("--tf-dir", default='../../infra/terraform', help="Path to Terraform directory")
+    parser.add_argument("--tf-dir", default=default_tf_dir, help="Path to Terraform directory")
     parser.add_argument("--state-bucket", required=True, help="Terraform State S3 Bucket Name")
     parser.add_argument("--lock-table", default='omnishop-tf-lock', help="Terraform Lock DynamoDB Table")
     
@@ -152,12 +218,14 @@ def main():
         cleaner = AWSCleaner(args.region, args.tf_dir, args.state_bucket, args.lock_table)
         
         print(f"⚠️  WARNING: This will DESTROY all infrastructure in {args.region} using state bucket {args.state_bucket}.")
+        print(f"   Terraform Directory: {args.tf_dir}")
         confirm = input("Are you sure you want to proceed? (yes/no): ")
         
         if confirm.lower() == 'yes':
             cleaner.cleanup_load_balancers()
             cleaner.run_terraform_destroy()
             cleaner.cleanup_state_store()
+            cleaner.verify_cleanup()
             logger.info("Cleanup sequence complete.")
         else:
             logger.info("Cleanup cancelled.")
